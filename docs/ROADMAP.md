@@ -1,41 +1,45 @@
 # Roadmap
 
-## Priorität 1: Stabilität und Migration
+## Priority 1: Stability and migration
 
-- echte versionierte SQLite-Migrationsschritte statt ausschließlich idempotenter Schema-Erweiterung
-- Zugangsdaten über Windows Credential Manager, Secret Service und macOS Keychain
-- API-Verhalten gegen mehrere Pi-hole-v6-Minor-Versionen testen
-- kontrollierter Dry-Run-Bericht vor Aktivierung automatischer Aktionen
-- Abbruch, Timeout und Fortschrittsanzeige für lange Recherche- und LLM-Jobs
+- introduce explicit, versioned SQLite migrations instead of relying only on idempotent schema extensions
+- store credentials through Windows Credential Manager, Secret Service, and macOS Keychain
+- test API behavior against multiple Pi-hole v6 minor releases
+- provide a controlled dry-run report before automatic actions can be enabled
+- add cancellation, timeout, and progress reporting for long research and LLM jobs
+- synchronize the validated v0.2 backend and GUI implementation completely with the GitHub repository
 
-## Priorität 2: Domain Intelligence
+## Priority 2: Domain intelligence
 
-- Protected Services und Compatibility Profiles
-- manuell editierbare Tags mit Vorrang vor LLM-Tags
-- bekannte Listen-Repositories gezielt priorisieren
-- Link- und Evidenzansicht statt reinem JSON-Detaildialog
-- optionale DNS-, CNAME- und Zertifikatstransparenz-Provider
-- Quellenqualität und widersprüchliche Evidenz bewerten
-- Golden-Testdatensatz für Prompt-, Provider- und Modellvergleiche
+- Protected Services and Compatibility Profiles
+- manually editable tags that override LLM-generated tags
+- targeted prioritization of known blocklist and allowlist repositories
+- evidence and link views instead of a raw JSON-only details dialog
+- dedicated GitHub Issues, Discussions, and repository-documentation research providers
+- controlled retrieval of selected forum and documentation pages
+- optional DNS, CNAME, and certificate-transparency providers
+- source-quality weighting and contradictory-evidence detection
+- citations connecting every synthesized claim to stored evidence
+- a golden dataset for prompt, provider, and model comparisons
 
-## Priorität 3: Pi-hole-Verwaltung
+## Priority 3: Pi-hole management
 
-- editierbare Gruppen-Zuordnung für Domains und Listen
-- separate Ansicht für Regex-Regeln und abonnierte Listen
-- Konflikterkennung zwischen Allow, Deny, Regex, Gruppen und Locks
-- Unterstützung mehrerer Pi-hole-Instanzen
-- Audit-Log und Ein-Klick-Rollback
+- editable group assignment for domains and lists
+- separate views for regex rules and subscribed lists
+- conflict detection across allow, deny, regex, groups, and locks
+- support for multiple Pi-hole instances
+- audit log and one-click rollback
 
-## Priorität 4: Review-Clients
+## Priority 4: Review clients
 
-- lokale HTTP-API mit Authentifizierung und Rollen
-- responsive Weboberfläche/PWA als erster Smartphone-Client
-- ntfy-/UnifiedPush-Benachrichtigungen mit Deep-Links
-- Review-Aktionen: erlauben, sperren, später, ignorieren, nie wieder fragen
-- Zugriff über LAN oder Tailscale ohne öffentliche Cloud-Abhängigkeit
+- authenticated local HTTP API with roles
+- responsive web interface or PWA as the first smartphone client
+- ntfy and UnifiedPush notifications with deep links
+- review actions: allow, deny, remind later, ignore, and never ask again
+- access through LAN or Tailscale without requiring a public cloud service
 
-## Priorität 5: Distribution
+## Priority 5: Distribution
 
-- Windows-Build mit PyInstaller
-- signierte Releases und reproduzierbarer Build
-- automatische Release-Artefakte über GitHub Actions
+- Windows builds with PyInstaller
+- signed releases and reproducible builds
+- automated release artifacts through GitHub Actions
