@@ -1,39 +1,52 @@
 # Pi-hole Manager
 
-Desktop-Anwendung für **Pi-hole v6 oder neuer**. Sie kombiniert eine bequeme Verwaltung exakter Allow-/Deny-Einträge mit einem lokalen Domain-Wissensspeicher, einem optionalen Recherche-Layer und einer OpenAI-kompatiblen LLM-Analyse.
+Pi-hole Manager is a desktop application for **Pi-hole v6 or newer**. It combines convenient management of exact allow and deny entries with a local domain-intelligence database, optional evidence collection, and OpenAI-compatible LLM analysis.
 
 ## Status
 
-Frühe Alpha. Der aktuelle Stand legt das technische Fundament für nachvollziehbare Domain-Intelligence:
+Early alpha. The project currently provides the technical foundation for explainable domain intelligence:
 
-- Live-Erfassung und Aggregation von DNS-Anfragen
-- historisierte LLM-Klassifizierungen statt Überschreiben des letzten Ergebnisses
-- mehrere Tags pro Domain, Dienstzuordnung und getrennte Risikowerte
-- automatische Wiedervorlage abgelaufener Klassifizierungen
-- optionale Recherche über RDAP, GitHub, Brave Search und VirusTotal
-- geschützte Allow-/Deny-Einträge mit automatischer Wiederherstellung
-- verlustfreie Worker-Queue mit Claim/Ack/Fail-Semantik
-- manuelle Review-Aufgaben bei Unsicherheit, hohem Ausfallrisiko oder Konflikten
+- live collection and aggregation of DNS queries
+- versioned LLM classifications instead of overwriting previous results
+- multiple tags per domain, service attribution, and separate risk scores
+- automatic re-evaluation of expired classifications
+- optional evidence collection through RDAP, GitHub, Brave Search, and VirusTotal
+- protected allow and deny entries with reconciliation support
+- durable worker queues with claim, acknowledge, retry, and failure states
+- manual review tasks for uncertainty, high breakage risk, or policy conflicts
 
-Automatische Aktionen sollten zunächst ausschließlich im Modus `manual` oder `hybrid` getestet werden.
+Automatic changes should initially be tested only in `manual` or `hybrid` mode.
 
-## Architektur
+## Research and LLM data flow
 
-- `pihole6api/`: niedrige, UI-unabhängige Pi-hole-v6-API-Schicht
-- `pihole_manager/`: Konfiguration, SQLite-Persistenz, Recherche, LLM-Logik und Worker
-- `pihole_manager/gui/`: Tkinter-Oberfläche und Tabs
-- `tests/`: Offline-Tests ohne laufenden Pi-hole-, Recherche- oder LLM-Server
-- `docs/`: Architekturentscheidungen und Roadmap
+Research providers do not replace the LLM. They collect structured facts and source references before classification:
 
-Weitere Details stehen in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+1. Pi-hole Manager checks its local research cache.
+2. Enabled providers retrieve registration data, source-code references, search-result snippets, or threat-intelligence data.
+3. Findings are stored locally with provider, source URL, confidence, retrieval time, and expiration time.
+4. The application builds a domain dossier containing DNS observations, research findings, and protection state.
+5. The dossier is sent to the selected LLM, which creates the human-readable description, tags, service attribution, risk scores, and recommendation.
+6. The response is validated before it is stored or considered by the policy engine.
+
+The current provider layer collects API responses and snippets. It does not yet crawl complete forum discussions or repository issues. Deeper source retrieval, source-quality weighting, and evidence citations are planned.
+
+## Architecture
+
+- `pihole6api/`: low-level, UI-independent Pi-hole v6 API layer
+- `pihole_manager/`: configuration, SQLite persistence, research, LLM logic, and workers
+- `pihole_manager/gui/`: Tkinter user interface and tabs
+- `tests/`: offline tests without a running Pi-hole, research, or LLM server
+- `docs/`: architecture decisions and roadmap
+
+Further details are available in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Installation
 
-Voraussetzungen:
+Requirements:
 
-- Python 3.11 oder neuer
+- Python 3.11 or newer
 - Tkinter
-- Pi-hole v6 oder neuer
+- Pi-hole v6 or newer
 
 ```bash
 python -m venv .venv
@@ -42,62 +55,64 @@ python -m pip install -e .
 python app.py
 ```
 
-Unter Linux lautet die Aktivierung meist:
+On Linux, activate the environment with:
 
 ```bash
 source .venv/bin/activate
 ```
 
-Optional für Desktop-Benachrichtigungen:
+Optional desktop notifications:
 
 ```bash
-python -m pip install -e "[desktop-notifications]"
+python -m pip install -e ".[desktop-notifications]"
 ```
 
-## Konfiguration und Datenschutz
+## Configuration and privacy
 
-Beim ersten Start wird lokal eine `options.json` erzeugt. Sie enthält unter anderem das Pi-hole-Anwendungspasswort sowie mögliche LLM- und Recherche-API-Schlüssel im Klartext. Deshalb wird sie durch `.gitignore` ausgeschlossen und darf nicht eingecheckt werden.
+On first launch, Pi-hole Manager creates a local `options.json`. It may contain the Pi-hole application password and LLM or research API keys in plain text. The file is excluded through `.gitignore` and must never be committed.
 
-Externe Recherche ist standardmäßig deaktiviert. Wird sie aktiviert, erhalten die ausgewählten Provider die zu untersuchenden Domainnamen. RDAP benötigt keinen Schlüssel; GitHub-Code-Suche, Brave Search und VirusTotal benötigen jeweils eigene Zugangsdaten.
+External research is disabled by default. Enabling a provider sends the domain being investigated to that provider. RDAP does not require an API key; GitHub code search, Brave Search, and VirusTotal require separate credentials.
 
-`options.example.json` zeigt die vollständige Struktur ohne Zugangsdaten.
+A cloud-hosted LLM is also an external service and receives the configured domain dossier. A locally hosted model, such as a local OpenAI-compatible endpoint, keeps that analysis inside the user's own environment.
 
-Pi-hole stellt die exakt zur installierten Version passende API-Dokumentation unter `http://pi.hole/api/docs` bereit. Diese lokale Dokumentation sollte bei API-Abweichungen zuerst geprüft werden.
+`options.example.json` documents the complete configuration structure without credentials.
 
-## LLM-Ausgabe
+Pi-hole exposes version-specific API documentation at `http://pi.hole/api/docs`. This local documentation should be checked first when API behavior differs between Pi-hole releases.
 
-Der Manager erwartet ein strikt validiertes Batch-Ergebnis. Jede Domain erhält getrennte Felder für:
+## LLM output
 
-- primäres Tag und zusätzliche Tags
-- Dienst und Rolle im Dienst
-- Datenschutz-, Sicherheits- und Ausfallrisiko
-- Modellkonfidenz und manuellen Review-Grund
-- Empfehlung, Beschreibung und ausführliche Begründung
-- Zeitpunkt der nächsten Neubewertung
+The manager expects a strictly validated batch result. Each domain receives separate fields for:
 
-Provider können JSON Schema, JSON Object oder reines Prompt-Formatting verwenden. Im Modus `auto` versucht der Client diese Varianten kontrolliert nacheinander. Eine unvollständige, doppelte oder einer falschen Domain zugeordnete Antwort wird verworfen.
+- primary and additional tags
+- service name and service role
+- privacy, security, and breakage risk
+- model confidence and manual-review reason
+- recommendation, concise description, and detailed explanation
+- next re-evaluation date
 
-## Sicherheitsmodell der Automatik
+Providers may use JSON Schema, JSON Object mode, or prompt-only formatting. In `auto` structured-output mode, the client tries the supported variants in a controlled order. Responses containing missing, duplicate, or unexpected domains are rejected.
 
-- `manual`: keine automatische Allow-/Deny-Aktion
-- `hybrid`: Modellentscheidung und sämtliche Tag-Policies müssen übereinstimmen
-- `auto`: gemeinsame Tag-Policy darf angewendet werden
+## Automation safety model
 
-Unabhängig vom Modus wird keine automatische Aktion ausgeführt bei:
+- `manual`: never change Pi-hole entries automatically
+- `hybrid`: the model recommendation and every applicable tag policy must agree
+- `auto`: a shared tag policy may be applied automatically
 
-- aktivem manuellen Review
-- zu geringer Konfidenz
-- Kern- oder geteilter Infrastruktur
-- hohem Ausfallrisiko
-- widersprüchlichen Tag-Policies
-- Konflikt mit einem geschützten Listen-Eintrag
+No automatic action is taken when:
 
-Der LLM-Kurztext wird bei Allow-/Deny-Aktionen als Pi-hole-Kommentar gespeichert.
+- manual review is required
+- confidence is below the configured threshold
+- the domain is core or shared infrastructure
+- breakage risk is too high
+- tag policies conflict
+- the action conflicts with a protected list entry
 
-## Entwicklung
+The concise LLM description is used as the Pi-hole comment for allow or deny actions.
+
+## Development
 
 ```bash
-python -m pip install -e "[dev]"
+python -m pip install -e ".[dev]"
 pytest
 ruff check .
 ```
