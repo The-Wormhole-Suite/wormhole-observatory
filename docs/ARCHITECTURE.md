@@ -1,17 +1,15 @@
 # Architektur
 
-## Ausgangsprobleme
+## Produktmodell
 
-Der frühere Stand vermischte Transport, Anwendung und GUI. Dadurch entstanden mehrere konkrete Fehler:
+Pi-hole Manager behandelt vier Ebenen getrennt:
 
-1. Der GUI-Wrapper rief den lokalen API-Client mit Parametern auf, die dessen Konstruktor nicht akzeptierte.
-2. Konfigurationsfelder hatten je nach Datei unterschiedliche Namen (`host`/`base_url`, `batch`/`batch_size`, `file`/`filename`).
-3. TLS-Prüfung war im API-Client faktisch immer deaktiviert.
-4. HTTP-Fehler wurden teilweise als normale Rückgabewerte behandelt und von Aufrufern als Erfolg interpretiert.
-5. Netzwerkzugriffe liefen teilweise im Tkinter-Hauptthread.
-6. Checkbox-Spalten waren optisch vorhanden, besaßen aber keinen eigenen Zustand.
-7. Die Staging-Queue löschte Domains vor erfolgreicher Klassifizierung und konnte Daten verlieren.
-8. LLM-Kategorie, Policy und Kurztext wurden beim Parsen und Speichern miteinander verwechselt.
+1. **Beobachtung** – wann, wie häufig und von welchen Clients eine Domain verwendet wurde
+2. **Wissen** – Rechercheergebnisse, Tags, Dienstzuordnung und Klassifizierungsverlauf
+3. **Entscheidung** – Nutzer- und Policy-Entscheidungen einschließlich Review-Aufgaben
+4. **Durchsetzung** – tatsächliche Allow-/Deny-Einträge in Pi-hole
+
+Eine LLM-Empfehlung ist damit kein unmittelbarer DNS-Befehl. Erst die deterministische Policy-Engine darf daraus eine Aktion ableiten.
 
 ## Schichten
 
@@ -31,27 +29,76 @@ Diese Schicht enthält Anwendungsregeln:
 
 - typisierte und migrierbare Konfiguration
 - SQLite-Queue mit Claim/Ack/Fail-Semantik
-- OpenAI-kompatible LLM-Anbindung
-- Auflösung von Kategorie-Policies in automatische Aktionen
-- langlebige Scanner- und Classifier-Worker
+- persistierte Scanner-Checkpoints
+- aggregierte Query-Beobachtungen
+- historisierte Recherche- und Klassifizierungsläufe
+- OpenAI-kompatible LLM-Anbindung mit validierter Batch-Ausgabe
+- Auflösung mehrerer Tag-Policies in automatische Aktionen
+- langlebige Scanner-, Classifier- und Lock-Reconciler-Worker
 
 ### `pihole_manager.gui`
 
 Tkinter bleibt ausschließlich Darstellung und Benutzerinteraktion. Netzwerkzugriffe werden über einen Executor ausgeführt und Ergebnisse anschließend im UI-Thread verarbeitet.
 
-## Persistenz
+## Datenmodell
+
+### `domains`
+
+Stabiler Zustand pro Domain: erstes und letztes Auftreten, Query-Anzahl, letzte Klassifizierung, nächste Neubewertung und aktueller Dienst-/Policy-Snapshot.
+
+### `query_observations`
+
+Stündlich aggregierte Beobachtungen nach Domain, Client, Query-Typ und Status. Dadurch bleibt Kontext erhalten, ohne jede einzelne DNS-Anfrage unbegrenzt zu duplizieren.
+
+### `classification_runs`
+
+Unveränderlicher Verlauf aller LLM-Auswertungen mit Provider, Modell, Prompt-Fingerprint, Tags, Risiken, Konfidenz, Rohantwort und Ablaufdatum.
+
+### `research_findings`
+
+Zeitlich begrenzte Evidenz aus unabhängigen Quellen. Aktuell implementiert:
+
+- RDAP-Registrierungsinformationen über das IANA-Bootstrap-Verzeichnis
+- GitHub-Code-Suche
+- Brave-Websuche
+- VirusTotal-Domainberichte
+
+Jeder Provider besitzt eigenes Caching, Timeout und Request-Intervall. Externe Recherche ist standardmäßig deaktiviert.
+
+### `domain_locks`
+
+Administrative Schutzregel für einen exakten Allow- oder Deny-Eintrag. Der Lock-Reconciler stellt entfernte Einträge wieder her und erzeugt bei widersprüchlichen Listen einen Review-Task.
+
+### `review_tasks`
+
+Priorisierte Aufgaben für unsichere, riskante oder widersprüchliche Ergebnisse. Diese Tabelle bildet später die Grundlage für Desktop-, Web- und Smartphone-Clients.
+
+## Tags, Dienst und Policy
+
+Die fachlichen Ebenen bleiben getrennt:
+
+- `tags`: mehrere Zwecke oder technische Rollen
+- `service`: vermuteter oder bekannter Dienst
+- `service_role`: `core`, `optional`, `shared` oder `unknown`
+- `policy`: Modell-Empfehlung
+- Risikowerte: Datenschutz, Sicherheit und Ausfallgefahr
+
+Eine Klassifizierung kann beispielsweise gleichzeitig `telemetry`, `analytics` und `api_backend` tragen. Automatik ist nur zulässig, wenn alle zugehörigen Tag-Policies dieselbe Aktion ergeben.
+
+## LLM-Vertrag
+
+Die LLM liefert ein Objekt mit `schema_version` und einem `results`-Array. Das Programm prüft:
+
+- exakt ein Ergebnis pro angeforderter Domain
+- keine unbekannten oder doppelten Domains
+- gültige Tags und Enum-Werte
+- begrenzte Risiko- und Konfidenzwerte
+- vollständige Pflichtfelder
+
+Schema-Konformität schützt nur die technische Schnittstelle. Die Policy-Engine prüft zusätzlich semantische Risiken und arbeitet fail-closed.
+
+## Persistenz und Secrets
 
 `options.json`, SQLite-Datenbank und Logs sind Laufzeitdaten im Anwendungsverzeichnis. Sie gehören nicht in Git. Die Konfiguration wird atomar über eine temporäre Datei ersetzt.
 
-Die aktuelle Passwortspeicherung ist bewusst nur ein Baseline-Verhalten. Eine spätere Version sollte Windows Credential Manager, Secret Service oder macOS Keychain über eine kleine Secret-Store-Abstraktion unterstützen.
-
-## LLM-Automatik
-
-Eine Klassifizierung besteht getrennt aus:
-
-- `policy`: Einschätzung des Modells
-- `category`: fachliche Kategorie
-- `short`: kurzer, für Pi-hole geeigneter Kommentar
-- `details`: ausführlichere Begründung
-
-Die Kategorie-Policy ist die administrative Vorgabe. Im Hybrid-Modus wird nur automatisch gehandelt, wenn Modell-Policy und Vorgabe übereinstimmen. Im Auto-Modus ist die Vorgabe maßgeblich.
+Die aktuelle Passwortspeicherung ist weiterhin nur ein Baseline-Verhalten. Eine spätere Version soll Windows Credential Manager, Secret Service oder macOS Keychain über eine Secret-Store-Abstraktion unterstützen.

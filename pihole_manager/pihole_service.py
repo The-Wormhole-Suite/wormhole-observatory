@@ -6,6 +6,7 @@ from typing import Any
 
 from pihole6api import PiHole6Client, normalize_api_url
 from pihole_manager.config import PiHoleOptions, load_options
+from pihole_manager.database import get_domain_lock
 from pihole_manager.models import ConnectionTestResult, Policy
 
 _CLIENT_LOCK = threading.RLock()
@@ -154,6 +155,12 @@ def add_exact_domain(domain: str, policy: Policy | str, comment: str = "") -> An
     policy_value = policy.value if isinstance(policy, Policy) else str(policy)
     if policy_value not in {Policy.ALLOW.value, Policy.DENY.value}:
         raise ValueError("policy must be allow or deny")
+    lock = get_domain_lock(domain)
+    if lock and lock["list_type"] != policy_value:
+        raise RuntimeError(
+            "Domain is protected in the "
+            f"{lock['list_type']} list and cannot be added to {policy_value}."
+        )
     return get_client().domain_management.add_domain(
         domain=domain,
         domain_type=policy_value,
@@ -167,4 +174,7 @@ def add_exact_domain(domain: str, policy: Policy | str, comment: str = "") -> An
 def delete_exact_domain(domain: str, domain_type: str) -> Any:
     if domain_type not in {"allow", "deny"}:
         raise ValueError("domain_type must be 'allow' or 'deny'")
+    lock = get_domain_lock(domain)
+    if lock and lock["list_type"] == domain_type:
+        raise RuntimeError("Domain is protected and cannot be removed until it is unlocked.")
     return get_client().domain_management.delete_domain(domain, domain_type, "exact")

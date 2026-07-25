@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "logging": {
     "enabled": true,
     "level": "INFO",
@@ -17,7 +17,9 @@
     "enabled": false,
     "interval_sec": 5,
     "batch_size": 200,
-    "initial_lookback_sec": 300
+    "initial_lookback_sec": 300,
+    "queue_trigger_size": 20,
+    "max_queue_wait_sec": 300
   },
   "pihole": {
     "base_url": "http://pi.hole",
@@ -28,22 +30,67 @@
   "llm": {
     "enabled": false,
     "interval_sec": 10,
-    "batch_size": 25,
+    "worker_batch_size": 25,
+    "domains_per_request": 10,
+    "min_request_interval_sec": 1.0,
+    "max_retries": 2,
     "active_provider_index": 0,
     "active_profile_index": 0,
     "automation_mode": "hybrid",
-    "categories": ["ads", "analytics", "cdn", "content", "essential", "malicious", "telemetry", "tracker", "unknown"],
-    "category_policies": {
-      "ads": "deny",
+    "default_recheck_days": 30,
+    "review_confidence_threshold": 0.75,
+    "auto_action_min_confidence": 0.95,
+    "tags": [
+      "advertising",
+      "cross_site_tracking",
+      "analytics",
+      "telemetry",
+      "crash_reporting",
+      "authentication",
+      "payments",
+      "api_backend",
+      "content_media",
+      "cdn_shared_infrastructure",
+      "software_updates",
+      "notifications_messaging",
+      "security_antifraud",
+      "iot_cloud",
+      "malware",
+      "phishing",
+      "command_and_control",
+      "unknown"
+    ],
+    "tag_policies": {
+      "advertising": "deny",
+      "cross_site_tracking": "deny",
       "analytics": "manual_review",
-      "cdn": "allow",
-      "content": "allow",
-      "essential": "allow",
-      "malicious": "deny",
       "telemetry": "manual_review",
-      "tracker": "deny",
+      "crash_reporting": "manual_review",
+      "authentication": "manual_review",
+      "payments": "manual_review",
+      "api_backend": "manual_review",
+      "content_media": "manual_review",
+      "cdn_shared_infrastructure": "manual_review",
+      "software_updates": "manual_review",
+      "notifications_messaging": "manual_review",
+      "security_antifraud": "manual_review",
+      "iot_cloud": "manual_review",
+      "malware": "deny",
+      "phishing": "deny",
+      "command_and_control": "deny",
       "unknown": "manual_review"
     }
+  },
+  "research": {
+    "enabled": false,
+    "run_before_llm": true,
+    "max_age_days": 30,
+    "timeout_sec": 15.0,
+    "max_results_per_provider": 5
+  },
+  "locks": {
+    "enabled": true,
+    "reconcile_interval_sec": 60
   },
   "llm_providers": [
     {
@@ -52,14 +99,57 @@
       "api_key": "",
       "model": "",
       "temperature": 0.0,
-      "timeout_sec": 30.0
+      "timeout_sec": 30.0,
+      "structured_output": "auto"
     }
   ],
   "prompt_profiles": [
     {
-      "name": "Default",
-      "system": "You classify DNS domains for a Pi-hole v6 administrator. Be conservative and prefer manual review when evidence is weak.",
-      "user_template": "Classify the domain: {domain}"
+      "name": "Balanced",
+      "system": "You classify DNS domains for a Pi-hole v6 administrator. Use the supplied evidence, distinguish facts from inference, and prefer manual review when evidence is weak or blocking may break an important service.",
+      "user_template": "Analyse the following domain dossiers. Return only the required structured result.\n{domain_dossiers}"
+    }
+  ],
+  "research_providers": [
+    {
+      "name": "RDAP registration data",
+      "kind": "rdap",
+      "enabled": true,
+      "base_url": "",
+      "api_key": "",
+      "timeout_sec": 15.0,
+      "min_interval_sec": 1.0,
+      "max_results": 5
+    },
+    {
+      "name": "GitHub code and list search",
+      "kind": "github_code",
+      "enabled": false,
+      "base_url": "https://api.github.com",
+      "api_key": "",
+      "timeout_sec": 15.0,
+      "min_interval_sec": 6.5,
+      "max_results": 5
+    },
+    {
+      "name": "Brave web search",
+      "kind": "brave_search",
+      "enabled": false,
+      "base_url": "https://api.search.brave.com/res/v1/web/search",
+      "api_key": "",
+      "timeout_sec": 15.0,
+      "min_interval_sec": 1.0,
+      "max_results": 5
+    },
+    {
+      "name": "VirusTotal domain report",
+      "kind": "virustotal",
+      "enabled": false,
+      "base_url": "https://www.virustotal.com/api/v3",
+      "api_key": "",
+      "timeout_sec": 15.0,
+      "min_interval_sec": 15.5,
+      "max_results": 5
     }
   ],
   "ui": {
