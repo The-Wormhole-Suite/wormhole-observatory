@@ -1,104 +1,112 @@
-# Architektur
+# Architecture
 
-## Produktmodell
+## Product model
 
-Pi-hole Manager behandelt vier Ebenen getrennt:
+Pi-hole Manager treats four layers as separate concerns:
 
-1. **Beobachtung** – wann, wie häufig und von welchen Clients eine Domain verwendet wurde
-2. **Wissen** – Rechercheergebnisse, Tags, Dienstzuordnung und Klassifizierungsverlauf
-3. **Entscheidung** – Nutzer- und Policy-Entscheidungen einschließlich Review-Aufgaben
-4. **Durchsetzung** – tatsächliche Allow-/Deny-Einträge in Pi-hole
+1. **Observation** – when, how often, and by which clients a domain was used
+2. **Knowledge** – research findings, tags, service attribution, and classification history
+3. **Decision** – user and policy decisions, including manual review tasks
+4. **Enforcement** – the actual allow and deny entries in Pi-hole
 
-Eine LLM-Empfehlung ist damit kein unmittelbarer DNS-Befehl. Erst die deterministische Policy-Engine darf daraus eine Aktion ableiten.
+An LLM recommendation is therefore not a DNS command. Only the deterministic policy engine may derive an enforcement action from it.
 
-## Schichten
+## Layers
 
 ### `pihole6api`
 
-Diese Schicht kennt nur HTTP und Pi-hole-Ressourcen. Sie enthält keine GUI-, Datenbank- oder Anwendungskonfiguration.
+This layer knows only HTTP and Pi-hole resources. It contains no GUI, database, or application configuration logic.
 
-- normiert Basis-URLs auf `/api/`
-- verwaltet Pi-hole-Sessions
-- unterstützt konfigurierbare TLS-Prüfung und Timeouts
-- wirft definierte Exceptions bei HTTP-, Authentifizierungs- und Verbindungsfehlern
-- wiederholt automatisch nur idempotente Lesezugriffe
+- normalizes base URLs to `/api/`
+- manages Pi-hole sessions
+- supports configurable TLS verification and timeouts
+- raises defined HTTP, authentication, and connection exceptions
+- automatically retries only idempotent read requests
 
 ### `pihole_manager`
 
-Diese Schicht enthält Anwendungsregeln:
+This layer contains application rules:
 
-- typisierte und migrierbare Konfiguration
-- SQLite-Queue mit Claim/Ack/Fail-Semantik
-- persistierte Scanner-Checkpoints
-- aggregierte Query-Beobachtungen
-- historisierte Recherche- und Klassifizierungsläufe
-- OpenAI-kompatible LLM-Anbindung mit validierter Batch-Ausgabe
-- Auflösung mehrerer Tag-Policies in automatische Aktionen
-- langlebige Scanner-, Classifier- und Lock-Reconciler-Worker
+- typed and migratable configuration
+- SQLite queues with claim, acknowledge, retry, and failure semantics
+- persisted scanner checkpoints
+- aggregated DNS-query observations
+- versioned research and classification runs
+- OpenAI-compatible LLM integration with validated batch output
+- deterministic resolution of multiple tag policies
+- long-running scanner, classifier, and lock-reconciliation workers
 
 ### `pihole_manager.gui`
 
-Tkinter bleibt ausschließlich Darstellung und Benutzerinteraktion. Netzwerkzugriffe werden über einen Executor ausgeführt und Ergebnisse anschließend im UI-Thread verarbeitet.
+Tkinter is limited to presentation and user interaction. Network operations run through an executor, and their results are returned to the UI thread.
 
-## Datenmodell
+## Data model
 
 ### `domains`
 
-Stabiler Zustand pro Domain: erstes und letztes Auftreten, Query-Anzahl, letzte Klassifizierung, nächste Neubewertung und aktueller Dienst-/Policy-Snapshot.
+Stable state for each domain: first and last observation, query count, latest classification, next re-evaluation, and the current service and policy snapshot.
 
 ### `query_observations`
 
-Stündlich aggregierte Beobachtungen nach Domain, Client, Query-Typ und Status. Dadurch bleibt Kontext erhalten, ohne jede einzelne DNS-Anfrage unbegrenzt zu duplizieren.
+Hourly aggregates grouped by domain, client, query type, and status. This preserves relevant context without duplicating every DNS query indefinitely.
 
 ### `classification_runs`
 
-Unveränderlicher Verlauf aller LLM-Auswertungen mit Provider, Modell, Prompt-Fingerprint, Tags, Risiken, Konfidenz, Rohantwort und Ablaufdatum.
+Immutable history of LLM evaluations, including provider, model, prompt fingerprint, tags, risk scores, confidence, raw response, and expiration time.
 
 ### `research_findings`
 
-Zeitlich begrenzte Evidenz aus unabhängigen Quellen. Aktuell implementiert:
+Time-limited evidence from independent sources. The planned provider set includes:
 
-- RDAP-Registrierungsinformationen über das IANA-Bootstrap-Verzeichnis
-- GitHub-Code-Suche
-- Brave-Websuche
-- VirusTotal-Domainberichte
+- RDAP registration information through the IANA bootstrap registry
+- GitHub code and list references
+- Brave web-search results
+- VirusTotal domain reports
 
-Jeder Provider besitzt eigenes Caching, Timeout und Request-Intervall. Externe Recherche ist standardmäßig deaktiviert.
+Each provider has independent caching, timeout, and request-interval settings. Internet-facing research providers are disabled by default.
 
 ### `domain_locks`
 
-Administrative Schutzregel für einen exakten Allow- oder Deny-Eintrag. Der Lock-Reconciler stellt entfernte Einträge wieder her und erzeugt bei widersprüchlichen Listen einen Review-Task.
+An administrative protection rule for an exact allow or deny entry. The lock reconciler restores missing entries and creates a review task when contradictory entries are detected.
 
 ### `review_tasks`
 
-Priorisierte Aufgaben für unsichere, riskante oder widersprüchliche Ergebnisse. Diese Tabelle bildet später die Grundlage für Desktop-, Web- und Smartphone-Clients.
+Prioritized tasks for uncertain, risky, or conflicting results. This table is intended to become the shared foundation for desktop, web, and smartphone review clients.
 
-## Tags, Dienst und Policy
+## Tags, service attribution, and policy
 
-Die fachlichen Ebenen bleiben getrennt:
+The semantic layers remain separate:
 
-- `tags`: mehrere Zwecke oder technische Rollen
-- `service`: vermuteter oder bekannter Dienst
-- `service_role`: `core`, `optional`, `shared` oder `unknown`
-- `policy`: Modell-Empfehlung
-- Risikowerte: Datenschutz, Sicherheit und Ausfallgefahr
+- `tags`: multiple purposes or technical roles
+- `service`: suspected or known service
+- `service_role`: `core`, `optional`, `shared`, or `unknown`
+- `policy`: model recommendation
+- risk scores: privacy, security, and service-breakage risk
 
-Eine Klassifizierung kann beispielsweise gleichzeitig `telemetry`, `analytics` und `api_backend` tragen. Automatik ist nur zulässig, wenn alle zugehörigen Tag-Policies dieselbe Aktion ergeben.
+A classification may carry `telemetry`, `analytics`, and `api_backend` at the same time. Automatic action is allowed only when all applicable tag policies resolve to the same action.
 
-## LLM-Vertrag
+## LLM contract
 
-Die LLM liefert ein Objekt mit `schema_version` und einem `results`-Array. Das Programm prüft:
+The LLM returns an object containing `schema_version` and a `results` array. The application validates:
 
-- exakt ein Ergebnis pro angeforderter Domain
-- keine unbekannten oder doppelten Domains
-- gültige Tags und Enum-Werte
-- begrenzte Risiko- und Konfidenzwerte
-- vollständige Pflichtfelder
+- exactly one result for every requested domain
+- no unknown or duplicate domains
+- valid tags and enum values
+- bounded confidence and risk values
+- all required fields
 
-Schema-Konformität schützt nur die technische Schnittstelle. Die Policy-Engine prüft zusätzlich semantische Risiken und arbeitet fail-closed.
+Schema compliance protects only the technical interface. The policy engine also evaluates semantic risks and fails closed.
 
-## Persistenz und Secrets
+## Research data flow
 
-`options.json`, SQLite-Datenbank und Logs sind Laufzeitdaten im Anwendungsverzeichnis. Sie gehören nicht in Git. Die Konfiguration wird atomar über eine temporäre Datei ersetzt.
+Research providers collect structured evidence before LLM classification. Cached findings are combined with DNS observations and protection state into a domain dossier. The dossier is then supplied to the selected LLM, which performs interpretation, synthesis, and risk assessment.
 
-Die aktuelle Passwortspeicherung ist weiterhin nur ein Baseline-Verhalten. Eine spätere Version soll Windows Credential Manager, Secret Service oder macOS Keychain über eine Secret-Store-Abstraktion unterstützen.
+Search-result snippets and API summaries are evidence hints, not verified facts. Future versions should fetch selected primary sources, retain relevant passages, weight source quality, and expose citations in the review interface.
+
+## Persistence, privacy, and secrets
+
+`options.json`, the SQLite database, and log files are runtime data stored in the application directory and must not be committed to Git. Configuration is replaced atomically through a temporary file.
+
+An external provider is any internet-facing service outside the user's Pi-hole Manager host or trusted local environment. This includes public RDAP servers, GitHub, Brave Search, VirusTotal, and cloud-hosted LLM APIs. Such providers receive at least the domain being investigated; a cloud LLM may receive the complete configured domain dossier.
+
+The current password storage remains baseline-only. A later version should support Windows Credential Manager, Secret Service, and macOS Keychain through a secret-store abstraction.
