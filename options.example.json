@@ -1,0 +1,81 @@
+{
+  "schema_version": 2,
+  "logging": {
+    "enabled": true,
+    "level": "INFO",
+    "filename": "pihole_manager.log",
+    "rotate_bytes": 2000000,
+    "backup_count": 3
+  },
+  "notify": {
+    "enable_desktop": false,
+    "enable_sound": false,
+    "rate_limit_sec": 5,
+    "toast_title": "Pi-hole Manager"
+  },
+  "scans": {
+    "enabled": false,
+    "interval_sec": 5,
+    "batch_size": 200,
+    "initial_lookback_sec": 300
+  },
+  "pihole": {
+    "base_url": "http://pi.hole",
+    "password": "",
+    "verify_tls": true,
+    "timeout_sec": 10.0
+  },
+  "llm": {
+    "enabled": false,
+    "interval_sec": 10,
+    "batch_size": 25,
+    "active_provider_index": 0,
+    "active_profile_index": 0,
+    "automation_mode": "hybrid",
+    "categories": ["ads", "analytics", "cdn", "content", "essential", "malicious", "telemetry", "tracker", "unknown"],
+    "category_policies": {
+      "ads": "deny",
+      "analytics": "manual_review",
+      "cdn": "allow",
+      "content": "allow",
+      "essential": "allow",
+      "malicious": "deny",
+      "telemetry": "manual_review",
+      "tracker": "deny",
+      "unknown": "manual_review"
+    }
+  },
+  "llm_providers": [
+    {
+      "name": "Local or OpenAI-compatible",
+      "base_url": "",
+      "api_key": "",
+      "model": "",
+      "temperature": 0.0,
+      "timeout_sec": 30.0
+    }
+  ],
+  "prompt_profiles": [
+    {
+      "name": "Default",
+      "system": "You classify DNS domains for a Pi-hole v6 administrator. Be conservative and prefer manual review when evidence is weak.",
+      "user_template": "Classify the domain: {domain}"
+    }
+  ],
+  "ui": {
+    "theme": "system",
+    "window_width": 1280,
+    "window_height": 820,
+    "auto_update_queries": true,
+    "query_refresh_ms": 2000,
+    "auto_scroll_queries": true,
+    "queries_colwidths": {
+      "selected": 38,
+      "time": 90,
+      "client": 170,
+      "domain": 360,
+      "type": 80,
+      "status": 140
+    }
+  }
+}
