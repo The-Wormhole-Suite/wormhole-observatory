@@ -7,6 +7,7 @@ from tkinter import messagebox, ttk
 
 from pihole_manager.config import load_options, save_options
 from pihole_manager.gui.scrollable import ScrollableFrame
+from pihole_manager.gui.tabs.settings_analysis_pools import AnalysisPoolsSettingsPage
 from pihole_manager.gui.tabs.settings_application import ApplicationSettingsPage
 from pihole_manager.gui.tabs.settings_automation import AutomationSettingsPage
 from pihole_manager.gui.tabs.settings_pihole import PiHoleSettingsPage
@@ -48,6 +49,10 @@ class SettingsTab(ttk.Frame):
             ),
             ("Automation", AutomationSettingsPage),
             ("LLM Providers", ProvidersSettingsPage),
+            (
+                "Analysis Pools",
+                lambda parent: AnalysisPoolsSettingsPage(parent, self.executor),
+            ),
             ("Prompt Profiles", ProfilesSettingsPage),
             ("Evidence Sources", ResearchSettingsPage),
             ("Application", ApplicationSettingsPage),
@@ -64,7 +69,8 @@ class SettingsTab(ttk.Frame):
 
         self.pihole_page = self.pages[0]
         self.automation_page = self.pages[1]
-        self.application_page = self.pages[5]
+        self.analysis_pools_page = self.pages[3]
+        self.application_page = self.pages[6]
         for page in self.pages[1:]:
             setter = getattr(page, "set_change_callback", None)
             if callable(setter):
@@ -173,6 +179,8 @@ class SettingsTab(ttk.Frame):
             if not page.store(self.options):
                 return
             save_options(self.options)
+            if isinstance(page, (ProvidersSettingsPage, ProfilesSettingsPage)):
+                self.analysis_pools_page.load(self.options)
             if isinstance(page, ApplicationSettingsPage):
                 setup_logging(force=True)
                 apply_theme(self.winfo_toplevel(), self.options.ui.theme)

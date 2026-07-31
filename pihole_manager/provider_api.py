@@ -8,8 +8,16 @@ from typing import Any
 
 import requests
 
-from pihole_manager.config import LLMProviderOptions, load_options
+from pihole_manager.config import LLMOptions, LLMProviderOptions, load_options
 from pihole_manager.http_retry import retry_delay_from_headers
+from pihole_manager.models import ProviderUsage
+from pihole_manager.provider_registry import ProviderLimitProfile
+from pihole_manager.quota import (
+    QuotaEstimate,
+    cancel_quota,
+    complete_quota,
+    wait_for_quota,
+)
 
 _RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
 _RATE_LOCK = threading.RLock()
@@ -35,6 +43,22 @@ class ProviderRateLimitError(requests.HTTPError):
     ) -> None:
         super().__init__(message, response=response)
         self.retry_after = retry_after
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderRequestContext:
+    pool_id: str
+    profile: ProviderLimitProfile
+    llm_options: LLMOptions
+    estimate: QuotaEstimate
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderResponse:
+    text: str
+    usage: ProviderUsage
+    latency_ms: int
+    headers: Mapping[str, str]
 
 
 def _append_path(base_url: str, path: str) -> str:
@@ -89,10 +113,47 @@ def request_provider_text(
     messages: Sequence[Mapping[str, str]],
     *,
     response_format: dict[str, Any] | None = None,
+    request_context: ProviderRequestContext | None = None,
 ) -> str:
+    return request_provider(
+        provider,
+        messages,
+        response_format=response_format,
+        request_context=request_context,
+    ).text
+
+
+def request_provider(
+    provider: LLMProviderOptions,
+    messages: Sequence[Mapping[str, str]],
+    *,
+    response_format: dict[str, Any] | None = None,
+    request_context: ProviderRequestContext | None = None,
+) -> ProviderResponse:
+    started_at = time.monotonic()
     if provider.api_style == "anthropic_messages":
-        return _request_anthropic(provider, messages)
-    return _request_openai_compatible(provider, messages, response_format=response_format)
+        response = _request_anthropic(
+            provider,
+            messages,
+            request_context=request_context,
+        )
+        data = response.json()
+        text = _extract_anthropic_text(data)
+    else:
+        response = _request_openai_compatible(
+            provider,
+            messages,
+            response_format=response_format,
+            request_context=request_context,
+        )
+        data = response.json()
+        text = _extract_openai_text(data)
+    return ProviderResponse(
+        text=text,
+        usage=_extract_provider_usage(data),
+        latency_ms=max(0, round((time.monotonic() - started_at) * 1000)),
+        headers={str(key): str(value) for key, value in getattr(response, "headers", {}).items()},
+    )
 
 
 def _request_openai_compatible(
@@ -100,7 +161,8 @@ def _request_openai_compatible(
     messages: Sequence[Mapping[str, str]],
     *,
     response_format: dict[str, Any] | None,
-) -> str:
+    request_context: ProviderRequestContext | None,
+) -> requests.Response:
     payload: dict[str, Any] = {
         "model": provider.model,
         "messages": [dict(item) for item in messages],
@@ -117,14 +179,17 @@ def _request_openai_compatible(
         chat_url(provider),
         json=payload,
         headers=_headers(provider),
+        request_context=request_context,
     )
-    return _extract_openai_text(response.json())
+    return response
 
 
 def _request_anthropic(
     provider: LLMProviderOptions,
     messages: Sequence[Mapping[str, str]],
-) -> str:
+    *,
+    request_context: ProviderRequestContext | None,
+) -> requests.Response:
     system_parts = [
         str(item.get("content") or "") for item in messages if item.get("role") == "system"
     ]
@@ -148,26 +213,40 @@ def _request_anthropic(
         chat_url(provider),
         json=payload,
         headers=_headers(provider),
+        request_context=request_context,
     )
-    return _extract_anthropic_text(response.json())
+    return response
 
 
 def _request_with_retries(
     provider: LLMProviderOptions,
     request: Any,
     url: str,
+    *,
+    request_context: ProviderRequestContext | None = None,
     **kwargs: Any,
 ) -> requests.Response:
-    options = load_options().llm
+    options = request_context.llm_options if request_context is not None else load_options().llm
     attempts = max(1, int(options.max_retries) + 1)
     kwargs["timeout"] = max(1.0, float(provider.timeout_sec))
     last_error: Exception | None = None
 
     for attempt in range(attempts):
         _wait_for_request_slot(provider, options.min_request_interval_sec)
+        reservation = None
+        if request_context is not None:
+            reservation = wait_for_quota(
+                provider,
+                request_context.profile,
+                request_context.estimate,
+                pool_id=request_context.pool_id,
+                llm_options=request_context.llm_options,
+            )
         try:
             response = request(url, **kwargs)
         except (requests.ConnectionError, requests.Timeout) as exc:
+            if reservation is not None and request_context is not None:
+                cancel_quota(reservation)
             last_error = exc
             _register_transient_failure(provider, attempt)
             if attempt + 1 >= attempts:
@@ -176,6 +255,16 @@ def _request_with_retries(
 
         status_code = int(getattr(response, "status_code", 200))
         if status_code in _RETRYABLE_STATUS_CODES:
+            if reservation is not None and request_context is not None:
+                complete_quota(
+                    reservation,
+                    usage=ProviderUsage(
+                        input_tokens=request_context.estimate.input_tokens,
+                        total_tokens=request_context.estimate.input_tokens,
+                    ),
+                    profile=request_context.profile,
+                    response_headers=getattr(response, "headers", {}),
+                )
             delay = _register_response_failure(provider, response, attempt)
             if attempt + 1 < attempts:
                 continue
@@ -187,7 +276,27 @@ def _request_with_retries(
                 )
             response.raise_for_status()
 
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except requests.HTTPError:
+            if reservation is not None and request_context is not None:
+                complete_quota(
+                    reservation,
+                    usage=ProviderUsage(
+                        input_tokens=request_context.estimate.input_tokens,
+                        total_tokens=request_context.estimate.input_tokens,
+                    ),
+                    profile=request_context.profile,
+                    response_headers=getattr(response, "headers", {}),
+                )
+            raise
+        if reservation is not None and request_context is not None:
+            complete_quota(
+                reservation,
+                usage=_response_usage(response),
+                profile=request_context.profile,
+                response_headers=getattr(response, "headers", {}),
+            )
         _register_success(provider)
         return response
 
@@ -334,3 +443,47 @@ def _extract_anthropic_text(data: Any) -> str:
     if not text:
         raise ValueError("Anthropic response contains no text block")
     return text
+
+
+def _response_usage(response: requests.Response) -> ProviderUsage:
+    try:
+        return _extract_provider_usage(response.json())
+    except (requests.JSONDecodeError, ValueError):
+        return ProviderUsage()
+
+
+def _extract_provider_usage(data: Any) -> ProviderUsage:
+    if not isinstance(data, dict):
+        return ProviderUsage()
+    usage = data.get("usage")
+    if not isinstance(usage, dict):
+        return ProviderUsage()
+    input_tokens = _usage_integer(
+        usage,
+        "prompt_tokens",
+        "input_tokens",
+        "prompt_token_count",
+    )
+    output_tokens = _usage_integer(
+        usage,
+        "completion_tokens",
+        "output_tokens",
+        "candidates_token_count",
+    )
+    total_tokens = _usage_integer(usage, "total_tokens", "total_token_count")
+    return ProviderUsage(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        total_tokens=max(total_tokens, input_tokens + output_tokens),
+    )
+
+
+def _usage_integer(usage: Mapping[str, Any], *names: str) -> int:
+    for name in names:
+        try:
+            value = int(usage.get(name) or 0)
+        except (TypeError, ValueError):
+            continue
+        if value >= 0:
+            return value
+    return 0

@@ -16,6 +16,7 @@ options.json
 *.sqlite3-wal
 *.log
 .env
+registry-private*.pem
 
 .idea/
 .vscode/

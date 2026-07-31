@@ -1,0 +1,293 @@
+{
+  "schema_version": 1,
+  "registry_version": "2026.07.31",
+  "generated_at": "2026-07-31T00:00:00Z",
+  "entries": [
+    {
+      "entry_id": "groq-gpt-oss-120b-free",
+      "preset_ids": [
+        "groq",
+        "groq_free_gpt_oss"
+      ],
+      "base_url_hosts": [
+        "api.groq.com"
+      ],
+      "models": [
+        "openai/gpt-oss-120b"
+      ],
+      "free_tier": "ongoing",
+      "free_tier_note": "Free-plan limits are organization-wide and model-specific.",
+      "quota_group": "groq-organization",
+      "capabilities": {
+        "context_tokens": 131072,
+        "max_output_tokens": 65536,
+        "structured_output": "prompt_only",
+        "native_browsing": true,
+        "local": false,
+        "deprecated": false
+      },
+      "limits": [
+        {
+          "metric": "requests",
+          "amount": 30,
+          "window_seconds": 60,
+          "scope": "organization_model"
+        },
+        {
+          "metric": "requests",
+          "amount": 1000,
+          "window_seconds": 86400,
+          "scope": "organization_model"
+        },
+        {
+          "metric": "total_tokens",
+          "amount": 8000,
+          "window_seconds": 60,
+          "scope": "organization_model"
+        },
+        {
+          "metric": "total_tokens",
+          "amount": 200000,
+          "window_seconds": 86400,
+          "scope": "organization_model"
+        }
+      ],
+      "verified_at": "2026-07-31",
+      "source_url": "https://console.groq.com/docs/rate-limits"
+    },
+    {
+      "entry_id": "cloudflare-qwen3-30b-free",
+      "preset_ids": [
+        "cloudflare_workers_ai_qwen_free"
+      ],
+      "base_url_hosts": [
+        "api.cloudflare.com"
+      ],
+      "models": [
+        "@cf/qwen/qwen3-30b-a3b-fp8"
+      ],
+      "free_tier": "ongoing",
+      "free_tier_note": "The daily neuron allocation is shared across Workers AI models in the account.",
+      "quota_group": "cloudflare-workers-ai-account",
+      "capabilities": {
+        "context_tokens": 32768,
+        "max_output_tokens": 8192,
+        "structured_output": "prompt_only",
+        "native_browsing": false,
+        "local": false,
+        "deprecated": false
+      },
+      "limits": [
+        {
+          "metric": "units",
+          "amount": 10000,
+          "window_seconds": 86400,
+          "scope": "account",
+          "reset_policy": "utc_day"
+        }
+      ],
+      "unit_costs": {
+        "input_tokens_per_million": 4625,
+        "output_tokens_per_million": 30475
+      },
+      "verified_at": "2026-07-31",
+      "source_url": "https://developers.cloudflare.com/workers-ai/platform/pricing/"
+    },
+    {
+      "entry_id": "cloudflare-gpt-oss-120b-free",
+      "preset_ids": [
+        "cloudflare_workers_ai_gpt_oss_free"
+      ],
+      "base_url_hosts": [
+        "api.cloudflare.com"
+      ],
+      "models": [
+        "@cf/openai/gpt-oss-120b"
+      ],
+      "free_tier": "ongoing",
+      "free_tier_note": "The daily neuron allocation is shared across Workers AI models in the account.",
+      "quota_group": "cloudflare-workers-ai-account",
+      "capabilities": {
+        "context_tokens": 131072,
+        "max_output_tokens": 32768,
+        "structured_output": "prompt_only",
+        "native_browsing": false,
+        "local": false,
+        "deprecated": false
+      },
+      "limits": [
+        {
+          "metric": "units",
+          "amount": 10000,
+          "window_seconds": 86400,
+          "scope": "account",
+          "reset_policy": "utc_day"
+        }
+      ],
+      "unit_costs": {
+        "input_tokens_per_million": 31818,
+        "output_tokens_per_million": 68182
+      },
+      "verified_at": "2026-07-31",
+      "source_url": "https://developers.cloudflare.com/workers-ai/platform/pricing/"
+    },
+    {
+      "entry_id": "cloudflare-gpt-oss-20b-free",
+      "preset_ids": [
+        "cloudflare_workers_ai_gpt_oss_20b_free"
+      ],
+      "base_url_hosts": [
+        "api.cloudflare.com"
+      ],
+      "models": [
+        "@cf/openai/gpt-oss-20b"
+      ],
+      "free_tier": "ongoing",
+      "free_tier_note": "The daily neuron allocation is shared across Workers AI models in the account.",
+      "quota_group": "cloudflare-workers-ai-account",
+      "capabilities": {
+        "context_tokens": 128000,
+        "max_output_tokens": 32768,
+        "structured_output": "prompt_only",
+        "native_browsing": false,
+        "local": false,
+        "deprecated": false
+      },
+      "limits": [
+        {
+          "metric": "units",
+          "amount": 10000,
+          "window_seconds": 86400,
+          "scope": "account",
+          "reset_policy": "utc_day"
+        }
+      ],
+      "unit_costs": {
+        "input_tokens_per_million": 18182,
+        "output_tokens_per_million": 27273
+      },
+      "verified_at": "2026-07-31",
+      "source_url": "https://developers.cloudflare.com/workers-ai/platform/pricing/"
+    },
+    {
+      "entry_id": "gemini-3.6-flash-free",
+      "preset_ids": [
+        "google_gemini",
+        "google_gemini_free"
+      ],
+      "base_url_hosts": [
+        "generativelanguage.googleapis.com"
+      ],
+      "models": [
+        "gemini-3.6-flash"
+      ],
+      "free_tier": "ongoing",
+      "free_tier_note": "Exact RPM, TPM and RPD values are project- and tier-specific and must be read from AI Studio.",
+      "quota_group": "google-ai-project",
+      "capabilities": {
+        "context_tokens": 1048576,
+        "max_output_tokens": 65536,
+        "structured_output": "json_schema",
+        "native_browsing": false,
+        "local": false,
+        "deprecated": false
+      },
+      "limits": [],
+      "verified_at": "2026-07-31",
+      "source_url": "https://ai.google.dev/gemini-api/docs/rate-limits"
+    },
+    {
+      "entry_id": "openrouter-free",
+      "preset_ids": [
+        "openrouter",
+        "openrouter_free"
+      ],
+      "base_url_hosts": [
+        "openrouter.ai"
+      ],
+      "models": [
+        "openrouter/free",
+        "*:free"
+      ],
+      "free_tier": "ongoing",
+      "free_tier_note": "The conservative daily limit applies when less than USD 10 in credits has ever been purchased.",
+      "quota_group": "openrouter-account",
+      "capabilities": {
+        "context_tokens": 32768,
+        "max_output_tokens": 8192,
+        "structured_output": "prompt_only",
+        "native_browsing": false,
+        "local": false,
+        "deprecated": false
+      },
+      "limits": [
+        {
+          "metric": "requests",
+          "amount": 20,
+          "window_seconds": 60,
+          "scope": "account"
+        },
+        {
+          "metric": "requests",
+          "amount": 50,
+          "window_seconds": 86400,
+          "scope": "account"
+        }
+      ],
+      "verified_at": "2026-07-31",
+      "source_url": "https://openrouter.ai/docs/api_reference/limits"
+    },
+    {
+      "entry_id": "cerebras-gpt-oss-120b-trial",
+      "preset_ids": [
+        "cerebras",
+        "cerebras_free_gpt_oss"
+      ],
+      "base_url_hosts": [
+        "api.cerebras.ai"
+      ],
+      "models": [
+        "gpt-oss-120b"
+      ],
+      "free_tier": "trial",
+      "free_tier_note": "New accounts receive USD 5 after payment verification; credits expire after 30 days.",
+      "quota_group": "cerebras-organization",
+      "capabilities": {
+        "context_tokens": 131072,
+        "max_output_tokens": 65536,
+        "structured_output": "prompt_only",
+        "native_browsing": false,
+        "local": false,
+        "deprecated": false
+      },
+      "limits": [
+        {
+          "metric": "requests",
+          "amount": 5,
+          "window_seconds": 60,
+          "scope": "organization_model"
+        },
+        {
+          "metric": "total_tokens",
+          "amount": 30000,
+          "window_seconds": 60,
+          "scope": "organization_model"
+        },
+        {
+          "metric": "total_tokens",
+          "amount": 1000000,
+          "window_seconds": 3600,
+          "scope": "organization_model"
+        },
+        {
+          "metric": "total_tokens",
+          "amount": 1000000,
+          "window_seconds": 86400,
+          "scope": "organization_model"
+        }
+      ],
+      "verified_at": "2026-07-31",
+      "source_url": "https://inference-docs.cerebras.ai/support/rate-limits"
+    }
+  ]
+}

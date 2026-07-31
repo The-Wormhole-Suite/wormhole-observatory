@@ -6,7 +6,18 @@ import time
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 
-from pihole_manager.config import load_options
+from pihole_manager.analysis_dispatcher import (
+    AnalysisDispatchResult,
+    AnalysisUnavailableError,
+    dispatch_analysis,
+)
+from pihole_manager.config import (
+    LLMOptions,
+    LLMProviderOptions,
+    Options,
+    PromptProfileOptions,
+    load_options,
+)
 from pihole_manager.database import (
     create_review_task,
     domain_observation_summary,
@@ -20,14 +31,16 @@ from pihole_manager.database import (
     set_state,
     staging_ack,
     staging_claim_items,
+    staging_defer,
     staging_fail,
     staging_ready,
     staging_requeue_processing,
 )
-from pihole_manager.llm import classify_domains, prompt_fingerprint
+from pihole_manager.llm import prompt_fingerprint
 from pihole_manager.models import (
     AutomationMode,
     Classification,
+    ClassificationRunContext,
     Policy,
     ReviewPriority,
     ServiceRole,
@@ -169,27 +182,42 @@ class Scanner(ManagedWorker):
 
 
 class Classifier(ManagedWorker):
-    def __init__(self) -> None:
-        super().__init__("LLMClassifier")
+    def __init__(self, pool_id: str = "background") -> None:
+        normalized_pool = pool_id.strip().lower()
+        if normalized_pool not in {"realtime", "background"}:
+            raise ValueError(f"Unsupported analysis pool: {pool_id}")
+        super().__init__(f"LLMClassifier-{normalized_pool}")
+        self.pool_id = normalized_pool
         self._notifier = Notifier()
 
     def run(self) -> None:
-        staging_requeue_processing()
-        log.info("LLM classifier started")
+        staging_requeue_processing(pool_id=self.pool_id)
+        log.info("%s LLM classifier started", self.pool_id)
         while not self._stop_event.is_set():
             options = load_options()
             if not options.llm.enabled:
+                self.wait(options.llm.interval_sec)
+                continue
+            pool = next(
+                (item for item in options.analysis_pools if item.pool_id == self.pool_id),
+                None,
+            )
+            if pool is None or not pool.enabled:
                 self.wait(options.llm.interval_sec)
                 continue
 
             if not staging_ready(
                 options.scans.queue_trigger_size,
                 options.scans.max_queue_wait_sec,
+                pool_id=self.pool_id,
             ):
                 self.wait(options.llm.interval_sec)
                 continue
 
-            claimed_items = staging_claim_items(options.llm.worker_batch_size)
+            claimed_items = staging_claim_items(
+                options.llm.worker_batch_size,
+                pool_id=self.pool_id,
+            )
             if not claimed_items:
                 self.wait(options.llm.interval_sec)
                 continue
@@ -198,42 +226,145 @@ class Classifier(ManagedWorker):
                 str(item["domain"]): str(item.get("source") or "") for item in claimed_items
             }
 
-            for batch in _chunks(domains, options.llm.domains_per_request):
-                if self._stop_event.is_set():
-                    for domain in batch:
-                        staging_fail(domain, "Classifier stopped before processing")
-                    break
-                unlocked_batch = []
-                for domain in batch:
-                    if get_domain_lock(domain) is not None:
+            if self._stop_event.is_set():
+                for domain in domains:
+                    staging_fail(domain, "Classifier stopped before processing")
+                break
+            unlocked_domains = []
+            for domain in domains:
+                if get_domain_lock(domain) is not None:
+                    staging_ack(domain)
+                    log.info("Skipped protected domain analysis: %s", domain)
+                else:
+                    unlocked_domains.append(domain)
+            if not unlocked_domains:
+                continue
+            try:
+                dossiers = self._build_dossiers(unlocked_domains)
+                result = dispatch_analysis(
+                    self.pool_id,
+                    unlocked_domains,
+                    dossiers,
+                    options=options,
+                    source="queue",
+                )
+                completed = self._handle_dispatch_result(
+                    result,
+                    dossiers,
+                    queue_sources=queue_sources,
+                    options=options,
+                )
+                retry_at = max(
+                    (error.retry_at for error in result.errors),
+                    default=0.0,
+                )
+                for domain in unlocked_domains:
+                    if domain in completed:
                         staging_ack(domain)
-                        log.info("Skipped protected domain analysis: %s", domain)
-                    else:
-                        unlocked_batch.append(domain)
-                if not unlocked_batch:
-                    continue
-                batch = unlocked_batch
-                try:
-                    dossiers = self._build_dossiers(batch)
-                    classifications = classify_domains(batch, dossiers=dossiers)
-                    by_domain = {item.domain: item for item in classifications}
-                    dossier_by_domain = {str(item.get("domain") or ""): item for item in dossiers}
-                    for domain in batch:
-                        classification = by_domain.get(domain)
-                        if classification is None:
-                            staging_fail(domain, "LLM omitted the domain from the response")
-                            continue
-                        self._handle_classification(
-                            classification,
-                            dossier_by_domain.get(domain, {"domain": domain}),
-                            queue_source=queue_sources.get(domain, ""),
+                    elif retry_at > time.time():
+                        staging_defer(
+                            domain,
+                            "Assigned provider is temporarily unavailable.",
+                            retry_at,
                         )
-                        staging_ack(domain)
-                except Exception as exc:
-                    log.warning("Classification batch failed for %s: %s", batch, exc)
-                    for domain in batch:
+                    else:
+                        staging_fail(
+                            domain,
+                            "No provider returned a classification.",
+                            max_attempts=1,
+                        )
+            except AnalysisUnavailableError as exc:
+                log.warning(
+                    "%s classification deferred for %s: %s",
+                    self.pool_id,
+                    unlocked_domains,
+                    exc,
+                )
+                for domain in unlocked_domains:
+                    if exc.retry_at > time.time():
+                        staging_defer(domain, str(exc), exc.retry_at)
+                    else:
                         staging_fail(domain, str(exc), max_attempts=1)
-        log.info("LLM classifier stopped")
+            except Exception as exc:
+                log.warning(
+                    "%s classification batch failed for %s: %s",
+                    self.pool_id,
+                    unlocked_domains,
+                    exc,
+                )
+                for domain in unlocked_domains:
+                    staging_fail(domain, str(exc), max_attempts=1)
+        log.info("%s LLM classifier stopped", self.pool_id)
+
+    def _handle_dispatch_result(
+        self,
+        result: AnalysisDispatchResult,
+        dossiers: list[dict],
+        *,
+        queue_sources: dict[str, str],
+        options: Options,
+    ) -> set[str]:
+        dossier_by_domain = {str(item.get("domain") or ""): item for item in dossiers}
+        completed: set[str] = set()
+        provider_by_id = {provider.provider_id: provider for provider in options.llm_providers}
+        pool = next(item for item in options.analysis_pools if item.pool_id == result.pool_id)
+        profile = options.prompt_profiles[pool.profile_index]
+        for provider_result in result.provider_results:
+            provider = provider_by_id.get(provider_result.provider_id)
+            if provider is None:
+                continue
+            count = max(1, len(provider_result.classifications))
+            for classification in provider_result.classifications:
+                run_context = ClassificationRunContext(
+                    analysis_run_id=result.run_id,
+                    pool_id=result.pool_id,
+                    pool_mode=result.mode,
+                    provider_id=provider.provider_id,
+                    model=provider.model,
+                    profile=profile.name,
+                    prompt_hash=prompt_fingerprint(profile, options=options),
+                    is_primary=provider_result.is_primary,
+                    latency_ms=round(provider_result.latency_ms / count),
+                    usage=replace(
+                        provider_result.usage,
+                        input_tokens=round(provider_result.usage.input_tokens / count),
+                        output_tokens=round(provider_result.usage.output_tokens / count),
+                        total_tokens=round(provider_result.usage.total_tokens / count),
+                        units=provider_result.usage.units / count,
+                    ),
+                )
+                if provider_result.is_primary:
+                    self._handle_classification(
+                        classification,
+                        dossier_by_domain.get(
+                            classification.domain,
+                            {"domain": classification.domain},
+                        ),
+                        queue_source=queue_sources.get(classification.domain, ""),
+                        provider=provider,
+                        profile=profile,
+                        run_context=run_context,
+                        options=options,
+                    )
+                else:
+                    review_save_classification(
+                        classification,
+                        status="compared",
+                        provider_id=provider.provider_id,
+                        model=provider.model,
+                        profile=profile.name,
+                        prompt_hash=run_context.prompt_hash,
+                        analysis_run_id=result.run_id,
+                        pool_id=result.pool_id,
+                        pool_mode=result.mode,
+                        is_primary=False,
+                        latency_ms=run_context.latency_ms,
+                        input_tokens=run_context.usage.input_tokens,
+                        output_tokens=run_context.usage.output_tokens,
+                        update_current=False,
+                    )
+                completed.add(classification.domain)
+        return completed
 
     def _build_dossier(self, domain: str) -> dict:
         return self._build_dossiers([domain])[0]
@@ -259,12 +390,34 @@ class Classifier(ManagedWorker):
         dossier: dict,
         *,
         queue_source: str = "",
+        provider: LLMProviderOptions | None = None,
+        profile: PromptProfileOptions | None = None,
+        run_context: ClassificationRunContext | None = None,
+        options: Options | None = None,
     ) -> None:
-        options = load_options()
+        selected_options = options or load_options()
+        selected_provider = (
+            provider or selected_options.llm_providers[selected_options.llm.active_provider_index]
+        )
+        selected_profile = (
+            profile or selected_options.prompt_profiles[selected_options.llm.active_profile_index]
+        )
+        context = run_context or ClassificationRunContext(
+            provider_id=selected_provider.provider_id,
+            model=selected_provider.model,
+            profile=selected_profile.name,
+            prompt_hash=prompt_fingerprint(
+                selected_profile,
+                options=selected_options,
+            ),
+        )
         manual_review_requested = queue_source.startswith("manual_")
         classification = replace(
             classification,
-            recheck_after_days=_configured_recheck_days(classification),
+            recheck_after_days=_configured_recheck_days(
+                classification,
+                llm_options=selected_options.llm,
+            ),
             needs_review=classification.needs_review or manual_review_requested,
             review_reason=(
                 classification.review_reason
@@ -276,6 +429,7 @@ class Classifier(ManagedWorker):
         decision = resolve_automatic_decision(
             classification,
             evidence_count=decision_evidence_count,
+            llm_options=selected_options.llm,
         )
         action = decision.action
         lock = get_domain_lock(classification.domain)
@@ -304,7 +458,7 @@ class Classifier(ManagedWorker):
         if action is not None:
             planned_action = action.value
             action_name = "whitelist" if action is Policy.ALLOW else "blacklist"
-            if options.llm.simulation_mode:
+            if selected_options.llm.simulation_mode:
                 action_status = "simulated"
                 status = f"simulation_{action.value}"
                 create_review_task(
@@ -340,16 +494,22 @@ class Classifier(ManagedWorker):
                 source="llm",
             )
 
-        provider = options.llm_providers[options.llm.active_provider_index]
-        profile = options.prompt_profiles[options.llm.active_profile_index]
         review_save_classification(
             classification,
             status=status,
-            model=provider.model,
-            profile=profile.name,
-            prompt_hash=prompt_fingerprint(profile),
+            provider_id=selected_provider.provider_id,
+            model=context.model or selected_provider.model,
+            profile=context.profile or selected_profile.name,
+            prompt_hash=context.prompt_hash,
             planned_action=planned_action,
             action_status=action_status,
+            analysis_run_id=context.analysis_run_id,
+            pool_id=context.pool_id,
+            pool_mode=context.pool_mode,
+            is_primary=context.is_primary,
+            latency_ms=context.latency_ms,
+            input_tokens=context.usage.input_tokens,
+            output_tokens=context.usage.output_tokens,
         )
 
 
@@ -363,8 +523,9 @@ def resolve_automatic_decision(
     classification: Classification,
     *,
     evidence_count: int = 0,
+    llm_options: LLMOptions | None = None,
 ) -> AutomaticActionDecision:
-    options = load_options().llm
+    options = llm_options or load_options().llm
     try:
         mode = AutomationMode(options.automation_mode)
     except ValueError:
@@ -441,8 +602,12 @@ def resolve_automatic_action(classification: Classification) -> Policy | None:
     return resolve_automatic_decision(classification, evidence_count=1).action
 
 
-def _configured_recheck_days(classification: Classification) -> int:
-    options = load_options().llm
+def _configured_recheck_days(
+    classification: Classification,
+    *,
+    llm_options: LLMOptions | None = None,
+) -> int:
+    options = llm_options or load_options().llm
     tags = tuple(dict.fromkeys(classification.tags or (classification.category,)))
     suggested = max(
         1,
@@ -472,7 +637,7 @@ def _chunks(values: list[str], size: int) -> Iterable[list[str]]:
 
 
 _SCANNER: Scanner | None = None
-_CLASSIFIER: Classifier | None = None
+_CLASSIFIERS: dict[str, Classifier] = {}
 _WORKER_LOCK = threading.RLock()
 
 
@@ -486,19 +651,21 @@ def get_scanner() -> Scanner:
 
 
 def get_classifier() -> Classifier:
-    global _CLASSIFIER
     with _WORKER_LOCK:
-        if _CLASSIFIER is None or not _CLASSIFIER.is_alive():
-            _CLASSIFIER = Classifier()
-            _CLASSIFIER.start()
-        return _CLASSIFIER
+        for pool_id in ("realtime", "background"):
+            worker = _CLASSIFIERS.get(pool_id)
+            if worker is None or not worker.is_alive():
+                worker = Classifier(pool_id)
+                _CLASSIFIERS[pool_id] = worker
+                worker.start()
+        return _CLASSIFIERS["background"]
 
 
 def stop_workers(timeout: float = 5.0) -> None:
-    global _SCANNER, _CLASSIFIER
+    global _SCANNER
     with _WORKER_LOCK:
         workers: list[ManagedWorker] = [
-            worker for worker in (_SCANNER, _CLASSIFIER) if worker is not None
+            worker for worker in (_SCANNER, *_CLASSIFIERS.values()) if worker is not None
         ]
         for worker in workers:
             worker.stop()
@@ -507,4 +674,4 @@ def stop_workers(timeout: float = 5.0) -> None:
             remaining = max(0.0, deadline - time.monotonic())
             worker.join(remaining)
         _SCANNER = None
-        _CLASSIFIER = None
+        _CLASSIFIERS.clear()

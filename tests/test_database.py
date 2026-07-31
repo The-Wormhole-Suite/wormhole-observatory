@@ -35,6 +35,65 @@ def test_staging_queue_uses_claim_ack_and_retry(monkeypatch, tmp_path) -> None:
     assert rows[0]["state"] == "queued"
 
 
+def test_staging_defer_hides_item_until_provider_reset(monkeypatch, tmp_path) -> None:
+    from time import time
+
+    from pihole_manager.database import staging_defer, staging_ready
+
+    monkeypatch.setenv("PIHOLE_MANAGER_HOME", str(tmp_path))
+    init_db()
+    staging_enqueue(["quota.example"], pool_id="background")
+    assert staging_claim(1, pool_id="background") == ["quota.example"]
+
+    retry_at = time() + 60
+    staging_defer("quota.example", "quota exhausted", retry_at)
+
+    row = staging_list()[0]
+    assert row["state"] == "queued"
+    assert row["attempts"] == 0
+    assert row["available_at"] >= int(retry_at)
+    assert not staging_ready(1, 1, pool_id="background")
+    assert staging_claim(1, pool_id="background") == []
+
+
+def test_legacy_staging_table_migrates_before_pool_index_creation(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    import sqlite3
+
+    monkeypatch.setenv("PIHOLE_MANAGER_HOME", str(tmp_path))
+    connection = sqlite3.connect(tmp_path / "pihole_manager.sqlite3")
+    connection.executescript(
+        """
+        CREATE TABLE schema_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+        INSERT INTO schema_meta(key, value) VALUES ('schema_version', '7');
+        CREATE TABLE staging_domains (
+            domain TEXT PRIMARY KEY,
+            state TEXT NOT NULL DEFAULT 'queued',
+            attempts INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            last_error TEXT NOT NULL DEFAULT ''
+        );
+        INSERT INTO staging_domains(
+            domain, state, attempts, created_at, updated_at, last_error
+        ) VALUES ('legacy.example', 'queued', 0, 1, 1, '');
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    init_db()
+
+    row = staging_list()[0]
+    assert row["pool_id"] == "background"
+    assert row["available_at"] == 0
+
+
 def test_review_fields_remain_separate(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("PIHOLE_MANAGER_HOME", str(tmp_path))
     init_db()

@@ -316,7 +316,7 @@ def domain_browser_search(
         LEFT JOIN classification_runs c ON c.id = (
             SELECT c2.id
             FROM classification_runs c2
-            WHERE c2.domain = d.domain
+            WHERE c2.domain = d.domain AND c2.is_primary = 1
             ORDER BY c2.created_at DESC, c2.id DESC
             LIMIT 1
         )

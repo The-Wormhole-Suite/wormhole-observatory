@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import tkinter as tk
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from tkinter import ttk
 
 from pihole_manager import __version__
@@ -17,6 +17,7 @@ from pihole_manager.gui.tabs.settings import SettingsTab
 from pihole_manager.gui.theme import apply_theme
 from pihole_manager.logging_setup import setup_logging
 from pihole_manager.pihole_service import close_client
+from pihole_manager.provider_registry import refresh_provider_registry_if_due
 from pihole_manager.workers import (
     get_classifier,
     get_scanner,
@@ -69,6 +70,9 @@ class App(tk.Tk):
 
         get_scanner()
         get_classifier()
+        if options.provider_registry.auto_update:
+            registry_future = self.executor.submit(refresh_provider_registry_if_due)
+            registry_future.add_done_callback(self._registry_refresh_finished)
         if options.updates.check_automatically:
             from pihole_manager.updater import should_check
 
@@ -95,6 +99,13 @@ class App(tk.Tk):
         save_options(options)
         self.settings_tab.set_simulation_mode(enabled)
         self._update_simulation_text()
+
+    @staticmethod
+    def _registry_refresh_finished(future: Future) -> None:
+        try:
+            future.result()
+        except Exception as exc:
+            log.warning("Provider registry refresh failed: %s", exc)
 
     def _update_simulation_text(self) -> None:
         state = "active" if self.simulation_mode.get() else "inactive"

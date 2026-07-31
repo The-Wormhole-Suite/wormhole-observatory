@@ -5,6 +5,7 @@ import json
 import logging
 import re
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 import requests
@@ -17,13 +18,26 @@ from pihole_manager.config import (
     load_options,
 )
 from pihole_manager.models import Classification, Policy, ServiceRole
-from pihole_manager.provider_api import request_provider_text
+from pihole_manager.provider_api import (
+    ProviderRequestContext,
+    ProviderResponse,
+    request_provider,
+    request_provider_text,
+)
+from pihole_manager.provider_registry import ProviderLimitProfile
+from pihole_manager.quota import estimate_provider_usage
 
 log = logging.getLogger(__name__)
 
 
 class LLMResponseError(ValueError):
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class ClassificationBatchResult:
+    classifications: tuple[Classification, ...]
+    response: ProviderResponse
 
 
 _RESULT_FIELDS = {
@@ -274,6 +288,90 @@ def classify_domains(
     raise RuntimeError(f"LLM request failed: {last_error}") from last_error
 
 
+def classify_domains_with_metadata(
+    domains: Sequence[str],
+    *,
+    provider: LLMProviderOptions,
+    profile: PromptProfileOptions,
+    dossiers: Sequence[Mapping[str, Any]],
+    options: Options,
+    pool_id: str,
+    limit_profile: ProviderLimitProfile,
+) -> ClassificationBatchResult:
+    normalized_domains = list(
+        dict.fromkeys(domain.strip().lower().rstrip(".") for domain in domains if domain.strip())
+    )
+    if not normalized_domains:
+        raise ValueError("At least one domain is required for provider analysis.")
+    if not provider.base_url.strip():
+        raise RuntimeError(f"LLM provider {provider.name} has no base URL configured")
+    if not provider.model.strip():
+        raise RuntimeError(f"LLM provider {provider.name} has no model configured")
+
+    dossier_map = {
+        str(item.get("domain") or "").strip().lower().rstrip("."): dict(item) for item in dossiers
+    }
+    normalized_dossiers: list[dict[str, Any]] = []
+    for domain in normalized_domains:
+        dossier = dossier_map.get(domain, {"domain": domain})
+        dossier["domain"] = domain
+        normalized_dossiers.append(dossier)
+
+    messages = build_batch_messages(
+        profile,
+        normalized_dossiers,
+        llm_options=options.llm,
+    )
+    estimate = estimate_provider_usage(
+        messages,
+        provider=provider,
+        profile=limit_profile,
+        domain_count=len(normalized_domains),
+    )
+    request_context = ProviderRequestContext(
+        pool_id=pool_id,
+        profile=limit_profile,
+        llm_options=options.llm,
+        estimate=estimate,
+    )
+    modes = (
+        ["prompt_only"]
+        if provider.api_style == "anthropic_messages"
+        else _structured_modes(provider.structured_output)
+    )
+    last_error: Exception | None = None
+    for mode in modes:
+        try:
+            response = request_provider(
+                provider,
+                messages,
+                response_format=_response_format(mode, options.llm.tags),
+                request_context=request_context,
+            )
+            classifications = parse_batch_classifications(
+                response.text,
+                normalized_domains,
+                options.llm.tags,
+                provider=provider.name,
+                llm_options=options.llm,
+            )
+            return ClassificationBatchResult(
+                classifications=tuple(classifications),
+                response=response,
+            )
+        except (requests.RequestException, ValueError, LLMResponseError) as exc:
+            last_error = exc
+            if mode == modes[-1] or not _can_try_output_mode_fallback(exc):
+                break
+            log.info(
+                "LLM output mode %s failed for provider %s; trying fallback: %s",
+                mode,
+                provider.name,
+                exc,
+            )
+    raise RuntimeError(f"LLM request failed: {last_error}") from last_error
+
+
 def _can_try_output_mode_fallback(exc: Exception) -> bool:
     if isinstance(exc, requests.HTTPError):
         response = exc.response
@@ -283,16 +381,20 @@ def _can_try_output_mode_fallback(exc: Exception) -> bool:
     return isinstance(exc, (ValueError, LLMResponseError))
 
 
-def prompt_fingerprint(profile: PromptProfileOptions | None = None) -> str:
-    options = load_options()
-    selected = profile or _active_profile(options)
+def prompt_fingerprint(
+    profile: PromptProfileOptions | None = None,
+    *,
+    options: Options | None = None,
+) -> str:
+    selected_options = options or load_options()
+    selected = profile or _active_profile(selected_options)
     payload = json.dumps(
         {
             "system": selected.system,
             "user_template": selected.user_template,
-            "tags": options.llm.tags,
-            "policies": options.llm.tag_policies,
-            "schema": classification_schema(options.llm.tags),
+            "tags": selected_options.llm.tags,
+            "policies": selected_options.llm.tag_policies,
+            "schema": classification_schema(selected_options.llm.tags),
         },
         sort_keys=True,
         ensure_ascii=False,

@@ -37,7 +37,7 @@ def test_legacy_configuration_is_migrated(monkeypatch, tmp_path) -> None:
 
     options = load_options()
 
-    assert options.schema_version == 16
+    assert options.schema_version == 17
     assert options.ui.table_visible_columns["review"][1:3] == ["order", "queued"]
     assert options.pihole.base_url == "https://pi.hole/admin"
     assert options.pihole.password == "application-password"
@@ -65,7 +65,97 @@ def test_save_options_is_valid_and_round_trips(monkeypatch, tmp_path) -> None:
     assert loaded.pihole.base_url == "http://dns.local"
     assert loaded.llm.categories == ["tracker"]
     assert loaded.logging.level == "INFO"
-    assert json.loads(options_path().read_text(encoding="utf-8"))["schema_version"] == 16
+    assert json.loads(options_path().read_text(encoding="utf-8"))["schema_version"] == 17
+
+
+def test_legacy_provider_is_migrated_into_both_analysis_pools(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("PIHOLE_MANAGER_HOME", str(tmp_path))
+    options_path().write_text(
+        json.dumps(
+            {
+                "schema_version": 16,
+                "llm": {"active_provider_index": 0, "active_profile_index": 0},
+                "llm_providers": [
+                    {
+                        "name": "Legacy Groq",
+                        "preset_id": "groq",
+                        "base_url": "https://api.groq.com/openai/v1",
+                        "model": "openai/gpt-oss-120b",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    options = load_options()
+
+    provider = options.llm_providers[0]
+    assert provider.provider_id.startswith("provider-")
+    assert provider.limits.mode == "auto"
+    assert [pool.pool_id for pool in options.analysis_pools] == [
+        "realtime",
+        "background",
+    ]
+    assert options.analysis_pools[0].mode == "fallback"
+    assert options.analysis_pools[1].mode == "distribute"
+    assert all(
+        pool.memberships[0].provider_id == provider.provider_id for pool in options.analysis_pools
+    )
+
+    save_options(options)
+    loaded = load_options()
+    assert loaded.llm_providers[0].provider_id == provider.provider_id
+
+
+def test_invalid_pool_and_limit_values_are_normalized(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("PIHOLE_MANAGER_HOME", str(tmp_path))
+    options_path().write_text(
+        json.dumps(
+            {
+                "llm_providers": [
+                    {
+                        "provider_id": "configured-provider",
+                        "name": "Provider",
+                        "limits": {
+                            "mode": "invalid",
+                            "requests_per_minute": -5,
+                            "safety_margin_percent": 80,
+                        },
+                    }
+                ],
+                "analysis_pools": [
+                    {
+                        "pool_id": "realtime",
+                        "mode": "invalid",
+                        "max_parallel_requests": 999,
+                        "memberships": [
+                            {
+                                "provider_id": "configured-provider",
+                                "role": "invalid",
+                                "weight": 0,
+                            }
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    options = load_options()
+
+    assert options.llm_providers[0].limits.mode == "auto"
+    assert options.llm_providers[0].limits.requests_per_minute == 0
+    assert options.llm_providers[0].limits.safety_margin_percent == 50
+    realtime = options.analysis_pools[0]
+    assert realtime.mode == "fallback"
+    assert realtime.max_parallel_requests == 16
+    assert realtime.memberships[0].role == "primary"
+    assert realtime.memberships[0].weight == 1
 
 
 def test_table_column_preferences_round_trip(monkeypatch, tmp_path) -> None:

@@ -37,7 +37,10 @@ analysis = Analysis(
     [str(project_root / "app.py")],
     pathex=[str(project_root)],
     binaries=[],
-    datas=[(str(manifest_path), ".")],
+    datas=[
+        (str(manifest_path), "."),
+        (str(project_root / "pihole_manager" / "data"), "pihole_manager/data"),
+    ],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
