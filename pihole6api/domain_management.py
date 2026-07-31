@@ -44,9 +44,7 @@ class PiHole6DomainManagement:
 
     def get_domain(self, domain: str, domain_type: DomainType, kind: DomainKind) -> Any:
         _validate(domain_type, kind)
-        return self.connection.get(
-            f"domains/{domain_type}/{kind}/{encode_path(domain)}"
-        )
+        return self.connection.get(f"domains/{domain_type}/{kind}/{encode_path(domain)}")
 
     def get_domains(
         self,
@@ -87,13 +85,9 @@ class PiHole6DomainManagement:
             f"domains/{domain_type}/{kind}/{encode_path(domain)}", data=payload
         )
 
-    def delete_domain(
-        self, domain: str, domain_type: DomainType, kind: DomainKind
-    ) -> Any:
+    def delete_domain(self, domain: str, domain_type: DomainType, kind: DomainKind) -> Any:
         _validate(domain_type, kind)
-        return self.connection.delete(
-            f"domains/{domain_type}/{kind}/{encode_path(domain)}"
-        )
+        return self.connection.delete(f"domains/{domain_type}/{kind}/{encode_path(domain)}")
 
     def get_all_domains(self) -> dict[str, Any]:
         return {

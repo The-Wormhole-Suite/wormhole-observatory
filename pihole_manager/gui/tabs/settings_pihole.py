@@ -1,54 +1,85 @@
 from __future__ import annotations
 
 import tkinter as tk
-from concurrent.futures import Future, ThreadPoolExecutor
+from collections.abc import Callable
 from tkinter import messagebox, ttk
 
 from pihole_manager.config import Options, PiHoleOptions
-from pihole_manager.pihole_service import test_connection
 
 
 class PiHoleSettingsPage(ttk.Frame):
-    def __init__(self, master: tk.Misc, executor: ThreadPoolExecutor) -> None:
+    def __init__(
+        self,
+        master: tk.Misc,
+        save_test_command: Callable[[], None],
+    ) -> None:
         super().__init__(master, padding=12)
-        self.executor = executor
         self.columnconfigure(1, weight=1)
 
         self.base_url = tk.StringVar()
         self.password = tk.StringVar()
         self.verify_tls = tk.BooleanVar()
         self.timeout = tk.StringVar()
-        self.result = tk.StringVar(value="No test performed.")
+        self.result = tk.StringVar(value="No connection test performed.")
 
-        fields = (
-            ("Base URL", self.base_url, False),
-            ("Application password", self.password, True),
-            ("Timeout in seconds", self.timeout, False),
+        ttk.Label(self, text="Base URL").grid(row=0, column=0, sticky="w", pady=4)
+        ttk.Entry(self, textvariable=self.base_url).grid(
+            row=0,
+            column=1,
+            sticky="ew",
+            padx=(10, 0),
+            pady=4,
         )
-        for row, (label, variable, secret) in enumerate(fields):
-            ttk.Label(self, text=label).grid(row=row, column=0, sticky="w", pady=4)
-            ttk.Entry(self, textvariable=variable, show="•" if secret else "").grid(
-                row=row, column=1, sticky="ew", padx=(10, 0), pady=4
-            )
 
+        ttk.Label(self, text="Application password").grid(
+            row=1,
+            column=0,
+            sticky="w",
+            pady=4,
+        )
+        ttk.Entry(self, textvariable=self.password, show="•").grid(
+            row=1,
+            column=1,
+            sticky="ew",
+            padx=(10, 0),
+            pady=4,
+        )
+
+        ttk.Label(self, text="Timeout in seconds").grid(
+            row=2,
+            column=0,
+            sticky="w",
+            pady=4,
+        )
+        timeout_row = ttk.Frame(self)
+        timeout_row.grid(row=2, column=1, sticky="w", padx=(10, 0), pady=4)
+        ttk.Entry(timeout_row, textvariable=self.timeout, width=10).pack(side="left")
         ttk.Checkbutton(
-            self, text="Verify TLS certificates", variable=self.verify_tls
-        ).grid(row=3, column=1, sticky="w", padx=(10, 0), pady=4)
-        ttk.Label(
-            self,
-            text=(
-                "The password is stored only in the local options.json file. "
-                "That file is excluded from Git."
-            ),
-            wraplength=760,
-        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(8, 4))
+            timeout_row,
+            text="Verify TLS certificate",
+            variable=self.verify_tls,
+        ).pack(side="left", padx=(12, 0))
 
-        self.test_button = ttk.Button(
-            self, text="Test connection", command=self._test_connection
+        self.save_test_button = ttk.Button(
+            self,
+            text="Save + Test",
+            command=save_test_command,
         )
-        self.test_button.grid(row=5, column=0, sticky="w", pady=(12, 4))
+        self.save_test_button.grid(
+            row=3,
+            column=1,
+            sticky="w",
+            padx=(10, 0),
+            pady=(8, 4),
+        )
+        self.save_test_button._skip_auto_save = True  # type: ignore[attr-defined]
+
         ttk.Label(self, textvariable=self.result, wraplength=900).grid(
-            row=6, column=0, columnspan=2, sticky="w", pady=(8, 0)
+            row=4,
+            column=0,
+            columnspan=2,
+            sticky="w",
+            pady=(8, 0),
         )
 
     def load(self, options: Options) -> None:
@@ -62,6 +93,9 @@ class PiHoleSettingsPage(ttk.Frame):
             timeout = float(self.timeout.get())
         except ValueError:
             messagebox.showerror("Connection", "Timeout must be a number.")
+            return None
+        if timeout <= 0:
+            messagebox.showerror("Connection", "Timeout must be greater than zero.")
             return None
         return PiHoleOptions(
             base_url=self.base_url.get().strip(),
@@ -77,23 +111,8 @@ class PiHoleSettingsPage(ttk.Frame):
         options.pihole = values
         return True
 
-    def _test_connection(self) -> None:
-        values = self._values()
-        if values is None:
-            return
-        self.test_button.state(["disabled"])
-        self.result.set("Testing connection …")
-        future = self.executor.submit(test_connection, values)
-        future.add_done_callback(lambda item: self.after(0, self._show_result, item))
+    def set_connection_status(self, text: str) -> None:
+        self.result.set(text)
 
-    def _show_result(self, future: Future) -> None:
-        self.test_button.state(["!disabled"])
-        try:
-            result = future.result()
-        except Exception as exc:
-            self.result.set(str(exc))
-            return
-        state = "SUCCESS" if result.success else "FAILED"
-        self.result.set(
-            f"{state} — {result.request_url} — {result.elapsed_ms} ms — {result.summary}"
-        )
+    def set_test_running(self, running: bool) -> None:
+        self.save_test_button.state(["disabled"] if running else ["!disabled"])

@@ -9,9 +9,7 @@ class PiHole6NetworkInfo:
     def __init__(self, connection: PiHole6Connection) -> None:
         self.connection = connection
 
-    def get_devices(
-        self, max_devices: int | None = None, max_addresses: int | None = None
-    ) -> Any:
+    def get_devices(self, max_devices: int | None = None, max_addresses: int | None = None) -> Any:
         params = {
             key: value
             for key, value in {
@@ -26,16 +24,10 @@ class PiHole6NetworkInfo:
         return self.connection.delete(f"network/devices/{encode_path(str(device_id))}")
 
     def get_gateway(self, detailed: bool = False) -> Any:
-        return self.connection.get(
-            "network/gateway", params={"detailed": str(detailed).lower()}
-        )
+        return self.connection.get("network/gateway", params={"detailed": str(detailed).lower()})
 
     def get_interfaces(self, detailed: bool = False) -> Any:
-        return self.connection.get(
-            "network/interfaces", params={"detailed": str(detailed).lower()}
-        )
+        return self.connection.get("network/interfaces", params={"detailed": str(detailed).lower()})
 
     def get_routes(self, detailed: bool = False) -> Any:
-        return self.connection.get(
-            "network/routes", params={"detailed": str(detailed).lower()}
-        )
+        return self.connection.get("network/routes", params={"detailed": str(detailed).lower()})

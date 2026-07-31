@@ -2,12 +2,21 @@ from __future__ import annotations
 
 import threading
 import time
+from dataclasses import dataclass
 from typing import Any
 
 from pihole6api import PiHole6Client, normalize_api_url
 from pihole_manager.config import PiHoleOptions, load_options
 from pihole_manager.database import get_domain_lock
 from pihole_manager.models import ConnectionTestResult, Policy
+
+
+@dataclass(frozen=True, slots=True)
+class QueryPage:
+    rows: list[dict[str, Any]]
+    cursor: str = ""
+    total: int | None = None
+
 
 _CLIENT_LOCK = threading.RLock()
 _CLIENT: PiHole6Client | None = None
@@ -103,29 +112,71 @@ def extract_collection(payload: Any, *keys: str) -> list[dict[str, Any]]:
     return []
 
 
-def fetch_queries(length: int = 200, from_ts: int | None = None) -> list[dict[str, Any]]:
-    payload = get_client().metrics.get_queries(length=length, from_ts=from_ts)
+def fetch_query_page(
+    length: int = 200,
+    from_ts: float | None = None,
+    until_ts: float | None = None,
+    *,
+    domain: str | None = None,
+    client: str | None = None,
+    cursor: str | None = None,
+) -> QueryPage:
+    payload = get_client().metrics.get_queries(
+        length=length,
+        from_ts=from_ts,
+        until_ts=until_ts,
+        domain=domain,
+        client=client,
+        cursor=cursor,
+    )
     rows = extract_collection(payload, "queries", "data")
     normalized: list[dict[str, Any]] = []
     for row in rows:
         timestamp = row.get("time") or row.get("timestamp") or row.get("ts") or 0
         try:
-            timestamp = int(float(timestamp))
+            timestamp = float(timestamp)
         except (TypeError, ValueError):
-            timestamp = 0
-        client = row.get("client")
-        if isinstance(client, dict):
-            client = client.get("name") or client.get("ip")
+            timestamp = 0.0
+        query_client = row.get("client")
+        if isinstance(query_client, dict):
+            query_client = query_client.get("name") or query_client.get("ip")
         normalized.append(
             {
                 "time": timestamp,
-                "client": str(client or row.get("ip") or row.get("requester") or ""),
+                "client": str(query_client or row.get("ip") or row.get("requester") or ""),
                 "domain": str(row.get("domain") or row.get("name") or row.get("qname") or ""),
                 "type": str(row.get("type") or row.get("qtype") or ""),
                 "status": str(row.get("status") or row.get("answer") or row.get("result") or ""),
             }
         )
-    return normalized
+
+    page_cursor = ""
+    total: int | None = None
+    if isinstance(payload, dict):
+        raw_cursor = payload.get("cursor") or payload.get("next_cursor")
+        if isinstance(raw_cursor, dict):
+            page_cursor = str(
+                raw_cursor.get("next")
+                or raw_cursor.get("forward")
+                or raw_cursor.get("cursor")
+                or ""
+            )
+        elif raw_cursor is not None:
+            page_cursor = str(raw_cursor)
+        for key in ("total", "recordsTotal", "count"):
+            value = payload.get(key)
+            if isinstance(value, int):
+                total = value
+                break
+    return QueryPage(normalized, page_cursor, total)
+
+
+def fetch_queries(
+    length: int = 200,
+    from_ts: float | None = None,
+    until_ts: float | None = None,
+) -> list[dict[str, Any]]:
+    return fetch_query_page(length, from_ts, until_ts).rows
 
 
 def fetch_exact_domains(domain_type: str) -> list[dict[str, Any]]:

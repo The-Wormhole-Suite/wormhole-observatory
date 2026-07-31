@@ -2,44 +2,52 @@
 
 ## Priority 1: Stability and migration
 
-- introduce explicit, versioned SQLite migrations instead of relying only on idempotent schema extensions
-- store credentials through Windows Credential Manager, Secret Service, and macOS Keychain
-- test API behavior against multiple Pi-hole v6 minor releases
-- provide a controlled dry-run report before automatic actions can be enabled
-- add cancellation, timeout, and progress reporting for long research and LLM jobs
-- synchronize the validated v0.2 backend and GUI implementation completely with the GitHub repository
+- versioned SQLite migrations with rollback tests
+- operating-system credential stores
+- integration tests against multiple Pi-hole v6 minor versions
+- connection health state and clearer offline behavior
+- cancellable long-running evidence and LLM jobs
 
-## Priority 2: Domain intelligence
+## Priority 2: Evidence quality
 
-- Protected Services and Compatibility Profiles
-- manually editable tags that override LLM-generated tags
-- targeted prioritization of known blocklist and allowlist repositories
-- evidence and link views instead of a raw JSON-only details dialog
-- dedicated GitHub Issues, Discussions, and repository-documentation research providers
-- controlled retrieval of selected forum and documentation pages
-- optional DNS, CNAME, and certificate-transparency providers
-- source-quality weighting and contradictory-evidence detection
-- citations connecting every synthesized claim to stored evidence
-- a golden dataset for prompt, provider, and model comparisons
+- source-quality scoring and contradiction detection
+- locally indexed additional list repositories with provenance
+- URLhaus integration after its authenticated feed contract is implemented and tested
+- licensing review before enabling non-commercial datasets in distributed builds
+- certificate-transparency and additional reputation adapters
+- provider-native browsing support for LLMs that can cite primary sources
+- evidence citations in every generated description
+- golden datasets for source, prompt, and model comparison
 
-## Priority 3: Pi-hole management
+## Priority 3: Domain intelligence
 
-- editable group assignment for domains and lists
-- separate views for regex rules and subscribed lists
-- conflict detection across allow, deny, regex, groups, and locks
-- support for multiple Pi-hole instances
+- protected services and compatibility profiles
+- manual tags that override LLM tags
+- service dependency graphs
+- historical behavior-change detection
+- evidence freshness policies per tag and source
+
+## Priority 4: Pi-hole management
+
+- group assignment for domains and lists
+- regex and subscribed-list views
+- conflict detection across exact rules, regex rules, groups, and locks
+- list audit jobs with configurable batches and rate limits
+- multiple Pi-hole instances
 - audit log and one-click rollback
 
-## Priority 4: Review clients
+## Priority 5: Review clients
 
-- authenticated local HTTP API with roles
-- responsive web interface or PWA as the first smartphone client
+- authenticated local HTTP API
+- responsive web UI and PWA
 - ntfy and UnifiedPush notifications with deep links
-- review actions: allow, deny, remind later, ignore, and never ask again
-- access through LAN or Tailscale without requiring a public cloud service
+- allow, deny, postpone, ignore, and never-ask-again decisions
+- LAN and Tailscale access without a required public cloud
 
-## Priority 5: Distribution
+## Priority 6: Distribution
 
-- Windows builds with PyInstaller
-- signed releases and reproducible builds
-- automated release artifacts through GitHub Actions
+- signed and reproducible Windows and Linux Onedir releases
+- code-signing and release provenance
+- multi-architecture Docker images with persistent volumes
+- Home Assistant app repository based on the container image
+- release retention and cleanup policy for development builds

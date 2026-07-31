@@ -33,9 +33,7 @@ def setup_logging(force: bool = False) -> None:
 
     console = logging.StreamHandler(sys.stdout)
     console.setLevel(level)
-    console.setFormatter(
-        logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-    )
+    console.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
     root.addHandler(console)
 
     if options.enabled:

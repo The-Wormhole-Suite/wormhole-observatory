@@ -1,0 +1,63 @@
+name: Development release
+
+on:
+  push:
+    branches: [dev]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows
+          - os: ubuntu-latest
+            platform: linux
+    runs-on: ${{ matrix.os }}
+    env:
+      PIHOLE_MANAGER_BUILD_CHANNEL: prerelease
+      PIHOLE_MANAGER_BUILD_ID: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Build Windows Onedir package
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: ./build_windows.ps1
+      - name: Build Linux Onedir package
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: ./build_linux.sh
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.platform }}-release
+          path: release/*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          path: release
+          merge-multiple: true
+      - name: Publish development prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          short_sha="${GITHUB_SHA::8}"
+          tag="dev-${GITHUB_RUN_NUMBER}-${short_sha}"
+          gh release create "$tag" release/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --prerelease \
+            --title "Development build ${short_sha}" \
+            --notes "Automated Onedir build from the dev branch at commit ${GITHUB_SHA}."

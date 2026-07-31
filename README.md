@@ -1,44 +1,182 @@
 # Pi-hole Manager
 
-Pi-hole Manager is a desktop application for **Pi-hole v6 or newer**. It combines convenient management of exact allow and deny entries with a local domain-intelligence database, optional evidence collection, and OpenAI-compatible LLM analysis.
+Pi-hole Manager is a desktop application for **Pi-hole v6 or newer**. It combines management of exact whitelist and blacklist entries with local domain intelligence, evidence collection, structured LLM classification, and conservative automation.
 
 ## Status
 
-Early alpha. The project currently provides the technical foundation for explainable domain intelligence:
+Early alpha. Enable **Simulation mode** for the first live test so the complete pipeline can run without automatic Pi-hole changes.
 
-- live collection and aggregation of DNS queries
-- versioned LLM classifications instead of overwriting previous results
-- multiple tags per domain, service attribution, and separate risk scores
-- automatic re-evaluation of expired classifications
-- optional evidence collection through RDAP, GitHub, Brave Search, and VirusTotal
-- protected allow and deny entries with reconciliation support
-- durable worker queues with claim, acknowledge, retry, and failure states
-- manual review tasks for uncertainty, high breakage risk, or policy conflicts
+## Core data flow
 
-Automatic changes should initially be tested only in `manual` or `hybrid` mode.
+1. The query collector retrieves live Pi-hole queries and stores aggregated observations.
+2. New, stale, manually selected, or scheduled domains enter a durable analysis queue.
+3. Fresh cached research findings are loaded separately for every source.
+4. Enabled research sources run in parallel with each other, while requests remain serial within
+   each source. A source is contacted only when its own evidence is missing or expired.
+5. A structured domain dossier is sent through the selected provider adapter.
+6. The LLM returns tags, service attribution, risks, confidence, description, and a recommendation.
+7. The response is validated against a fixed schema.
+8. A deterministic policy engine decides whether an automatic Pi-hole action is safe.
+9. Unsafe, conflicting, or uncertain results create a manual review task.
+10. In Simulation mode, otherwise eligible automatic actions are stored for later approval instead of being sent to Pi-hole.
 
-## Research and LLM data flow
+The LLM interprets evidence. It is not allowed to bypass the safety and policy layer.
 
-Research providers do not replace the LLM. They collect structured facts and source references before classification:
+## Background workers
 
-1. Pi-hole Manager checks its local research cache.
-2. Enabled providers retrieve registration data, source-code references, search-result snippets, or threat-intelligence data.
-3. Findings are stored locally with provider, source URL, confidence, retrieval time, and expiration time.
-4. The application builds a domain dossier containing DNS observations, research findings, and protection state.
-5. The dossier is sent to the selected LLM, which creates the human-readable description, tags, service attribution, risk scores, and recommendation.
-6. The response is validated before it is stored or considered by the policy engine.
+- **Query collector:** reads live queries, aggregates observations, and queues unseen or stale domains.
+- **Analysis worker:** processes manual jobs, live-query jobs, and scheduled rechecks. It refreshes
+  enabled research sources in source-specific queues, sends up to the configured number of domains
+  in one LLM request, stores history, and evaluates policies.
 
-The current provider layer collects API responses and snippets. It does not yet crawl complete forum discussions or repository issues. Deeper source retrieval, source-quality weighting, and evidence citations are planned.
+Automatic query jobs start when the configured queue threshold is reached or the oldest job has waited long enough. Manually queued jobs bypass that threshold. Pending, processing, and failed analysis jobs are visible immediately in Review Queue, including their source and current state.
 
-## Architecture
+LLM and evidence-provider requests honor `Retry-After` and common rate-limit reset headers.
+Transient 408, 429, 500, 502, 503, and 504 responses use bounded adaptive backoff. Authentication
+and other non-transient errors are not retried, and a rate-limited request never triggers additional
+structured-output fallback calls.
 
-- `pihole6api/`: low-level, UI-independent Pi-hole v6 API layer
-- `pihole_manager/`: configuration, SQLite persistence, research, LLM logic, and workers
-- `pihole_manager/gui/`: Tkinter user interface and tabs
-- `tests/`: offline tests without a running Pi-hole, research, or LLM server
-- `docs/`: architecture decisions and roadmap
+## Tags and policies
 
-Further details are available in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+A domain may have multiple tags. Every tag has an administrative default policy:
+
+- `allow`
+- `deny`
+- `manual_review`
+
+Automatic action is permitted only when all tags resolve to the same actionable policy. A `manual_review` tag acts as a veto. Mixed `allow` and `deny` policies create a conflict and require review.
+
+Each tag also has a recheck age. For domains with multiple tags, the shortest configured age is the upper limit; a shorter model suggestion is honored. Confidence is handled in three bands: results below the review threshold require review, results between the review and automatic thresholds are stored without automatic action, and results above the automatic threshold may be eligible for automation. Additional safety checks still block automation for high breakage risk, core or shared infrastructure, protected-list conflicts, and—by default—missing research evidence. Protected domains are excluded from automatic collection and scheduled rechecks; the manager does not continuously restore entries changed outside the application.
+
+## Simulation mode
+
+Simulation mode is enabled by default for new installations. Evidence collection, LLM calls,
+structured validation, confidence thresholds, tag policies, and automatic decision resolution all
+run normally. An eligible automatic whitelist or blacklist action is stored with the classification as a
+`simulated` action and appears in Review Queue and Domain Database. **Apply planned** performs the saved
+action later. Manual Whitelist/Blacklist buttons remain immediate and are never converted into simulations.
+
+Disabling Simulation mode allows eligible automatic actions to be written to Pi-hole. Historical
+simulation results remain visible and can still be applied or dismissed.
+
+## Review workflow, Domain Browser, and table columns
+
+The Review Queue uses three normal actions: **Analyze selected** queues the LLM and automatically reuses fresh evidence while collecting only missing or expired source data; **Collect evidence** refreshes enabled structured sources without invoking the LLM; and the single-domain context action **Run full review** refreshes evidence before queuing the LLM. The same context menu can show a compact evidence view without exposing raw provider payloads. Separate variants such as “analyze with collected evidence” are unnecessary because normal analysis always consumes the current evidence cache.
+
+Pending entries show **Not analyzed** until an LLM result exists. Unknown risk values are displayed as a dash rather than a synthetic score. For classified domains, breakage risk is a 0–100 estimate of how likely blocking the domain is to disrupt a service; 50 represents medium risk and already prevents an automatic Pi-hole change.
+
+The **Domain Database** tab provides a searchable view of every stored classification, including
+entries that no longer require manual review. Its batch actions are **Re-analyze selected** and
+**Re-collect evidence**. Filters are available for free text, policy, tag, service role, review
+state, and overdue rechecks. Results are queried directly from SQLite and loaded in pages of 500
+entries.
+
+The **Columns** menu in Live Queries, History Browser, Lists, Review Queue, and Domain Database
+controls which fields are shown. Columns can be reordered by dragging their headings or through the
+Reorder columns dialog. Review Queue headings can also be clicked to sort; the numbered column or
+**Reset sort** restores the original queue order. Auto-update, auto-scroll, and the refresh interval
+are configured directly in the Live Queries tab. Visibility, order, and widths are persisted
+separately for every table. The Pi-hole comment column is hidden by default in the Lists tab and can
+be enabled when needed. The Lists tab can queue selected entries or the complete current
+whitelist/blacklist for review, optionally limited to domains that have never been classified.
+
+
+## History Browser and idle backfill
+
+The **History Browser** searches Pi-hole query history by time range, domain, and client. It can show only domains that do not yet have a stored classification, optionally deduplicate repeated rows by domain, and queue selected rows or the complete page for review. Results are read in bounded pages and are never sent to the LLM merely by opening the browser.
+
+An optional idle history backfill can inspect older query pages after the live collector has received no new rows for a configured period. It queues only unclassified domains or domains whose recheck is due, processes one bounded page per cycle, and is disabled by default. Queue filtering is centralized; `.arpa` is excluded by default and additional suffixes can be configured under Automation without removing those rows from Live Queries or History Browser.
+
+## Settings behavior
+
+Settings pages scroll vertically when their content does not fit in the available window. Application, automation, provider, prompt-profile, and evidence-source changes are saved automatically after validation. Pi-hole connection values remain explicit: **Save + Test** stores the base URL, password, timeout, and TLS setting before testing the saved connection. Optional help icons can be disabled globally from the Application page.
+
+## Structured evidence and privacy
+
+Every queued domain is still assessed by the LLM. The evidence layer does not replace the
+model and is not a low-confidence fallback. It collects compact, machine-readable facts first,
+then the LLM turns the complete dossier into tags, service attribution, risks, confidence, and a
+human-readable explanation. A deterministic policy engine remains the final gate before any
+Pi-hole change.
+
+Evidence sources are divided into three modes:
+
+- **Local sources** inspect DNS data without contacting a dedicated evidence provider.
+- **Catalog sources** periodically download complete datasets and match domains locally.
+- **Lookup sources** send the investigated domain or a locally resolved public IP to a service.
+
+Built-in adapters include:
+
+- AdGuard service metadata for service and domain-family attribution
+- local A, AAAA, CNAME, NS, MX, HTTPS, and SVCB records
+- optional Disconnect tracker metadata
+- RDAP registration records
+- RIPEstat prefix, ASN, and network-holder information
+- optional Netcraft Site Report parsing when robots.txt and fair-use access permit it
+- VirusTotal reputation and scanner verdicts
+- ThreatFox exact IOC matches
+- a locally indexed PhishTank verified-phishing database
+- existing urlscan.io scan metadata without submitting active scans
+- Cloudflare Radar popularity and category metadata
+
+Generic search engines and generic GitHub code search are intentionally excluded from the
+structured layer. There is no portable provider-independent model API flag that guarantees
+Internet access, and Pi-hole Manager does not currently invoke provider-specific web-search tools.
+A provider that performs browsing automatically may use official documentation, selected GitHub
+repositories, issues, discussions, Pi-hole community reports, and user reports. Other models must
+rely on the supplied dossier and must not claim independent web research.
+
+Findings are normalized to a signal type and verdict. Infrastructure context such as RDAP,
+Netcraft, DNS records, ASN ownership, or popularity can improve the LLM description but cannot by
+itself authorize automatic whitelist or blacklist actions. Only explicitly decision-relevant evidence,
+such as a confirmed tracker classification or active threat match, can satisfy the optional
+evidence requirement for automation.
+
+Prompt input is bounded: negative cache entries are omitted, decision-relevant findings are
+prioritized, summaries are truncated, and only a limited number of findings are sent. Full raw
+responses remain available in the local database for the details view.
+
+External lookup providers receive the data described in their settings. Cloud-hosted LLMs receive
+the resulting dossier. Local SQLite storage, a local Pi-hole instance, catalog lookups after the
+catalog has been downloaded, and a locally hosted LLM remain inside the user's environment.
+
+## Prompt profiles and output contract
+
+Prompt profiles customize analysis behavior. The default profile tells browsing-capable models to verify domains against official documentation, GitHub issues and discussions, Pi-hole community reports, reputable blocklist repositories, and credible user reports. Models without browsing must not claim that they searched the web. The application appends an immutable technical contract containing:
+
+- configured tags and policies
+- exact required fields
+- enumerated values and numeric ranges
+- the JSON Schema
+- one-result-per-domain rules
+
+The user template must include `{domain_dossiers}`. The effective prompt can be previewed in the settings UI.
+
+Malformed, incomplete, duplicated, or mismatched results are rejected before they reach the policy engine.
+
+## LLM provider presets
+
+LLM providers and provider presets are sorted alphabetically; the active provider remains marked.
+Enabled evidence sources are shown before disabled sources and sorted alphabetically within each
+group. The LLM Providers settings page includes verified presets for major direct APIs, routing
+services, and local runtimes:
+
+- OpenAI, Anthropic Claude, Google Gemini, xAI, DeepSeek, and Mistral
+- GroqCloud, OpenRouter, Perplexity, Together AI, Fireworks AI, Cohere, Cerebras, SambaNova, and Hugging Face Inference Providers
+- Ollama, LM Studio, llama.cpp, LocalAI, vLLM, and LiteLLM
+
+Dedicated free-tier presets are included for Cerebras GPT OSS 120B, Groq GPT OSS 120B, and
+OpenRouter's free-model router. Adding one applies a conservative batch size, request interval, and
+retry count. Runtime server headers still override the preset delay when a provider reports a
+longer cooldown.
+
+Most providers use the OpenAI-compatible Chat Completions transport. Anthropic uses its native Messages API. **Fetch models** queries the provider's live models endpoint when the provider exposes one, so model IDs do not need to remain hard-coded in the application. A custom OpenAI-compatible provider remains available for self-hosted and enterprise gateways.
+
+**Discover local servers** probes only well-known loopback endpoints on `127.0.0.1`. It can detect Ollama, LM Studio, LocalAI, llama.cpp, vLLM, and LiteLLM, import visible model IDs, and avoid duplicate provider entries. It never scans the LAN automatically. A model server on another machine can be added through a preset or custom base URL and queried with **Fetch models**.
+
+Provider settings also allow disabling the temperature parameter and selecting whether the API expects `max_tokens`, `max_completion_tokens`, or no output-token parameter. This is necessary because OpenAI-compatible implementations differ in these details.
+
+Azure OpenAI, Amazon Bedrock, and Google Vertex AI are not represented as one-click presets because their endpoint and authentication values depend on deployments, regions, resources, or cloud IAM. They can be connected through an OpenAI-compatible gateway such as LiteLLM.
 
 ## Installation
 
@@ -55,7 +193,9 @@ python -m pip install -e .
 python app.py
 ```
 
-On Linux, activate the environment with:
+Install the dependencies once before starting the source checkout. On Windows, then start `app.pyw` with `pythonw.exe` or by double-clicking it to run without a terminal window. An editable installation also creates the GUI entry point `pihole-manager`. If `dnspython` is not available, the GUI still starts and the DNS evidence source falls back to standard-library A/AAAA resolution; installing the declared dependencies enables CNAME, NS, MX, HTTPS, and SVCB lookups.
+
+On Linux:
 
 ```bash
 source .venv/bin/activate
@@ -67,47 +207,21 @@ Optional desktop notifications:
 python -m pip install -e ".[desktop-notifications]"
 ```
 
-## Configuration and privacy
+## Windows executable
 
-On first launch, Pi-hole Manager creates a local `options.json`. It may contain the Pi-hole application password and LLM or research API keys in plain text. The file is excluded through `.gitignore` and must never be committed.
+A windowed PyInstaller build can be created without a console window:
 
-External research is disabled by default. Enabling a provider sends the domain being investigated to that provider. RDAP does not require an API key; GitHub code search, Brave Search, and VirusTotal require separate credentials.
+```powershell
+.\build_windows.ps1
+```
 
-A cloud-hosted LLM is also an external service and receives the configured domain dossier. A locally hosted model, such as a local OpenAI-compatible endpoint, keeps that analysis inside the user's own environment.
+The resulting Onedir application is written to `dist\Pi-Hole-Manager\`. Runtime errors continue to be written to the configured log file.
 
-`options.example.json` documents the complete configuration structure without credentials.
+## Configuration
 
-Pi-hole exposes version-specific API documentation at `http://pi.hole/api/docs`. This local documentation should be checked first when API behavior differs between Pi-hole releases.
+The first launch creates a local `options.json`. It may contain Pi-hole, LLM, and research credentials in plain text. Operating-system credential-store integration is planned before a stable release.
 
-## LLM output
-
-The manager expects a strictly validated batch result. Each domain receives separate fields for:
-
-- primary and additional tags
-- service name and service role
-- privacy, security, and breakage risk
-- model confidence and manual-review reason
-- recommendation, concise description, and detailed explanation
-- next re-evaluation date
-
-Providers may use JSON Schema, JSON Object mode, or prompt-only formatting. In `auto` structured-output mode, the client tries the supported variants in a controlled order. Responses containing missing, duplicate, or unexpected domains are rejected.
-
-## Automation safety model
-
-- `manual`: never change Pi-hole entries automatically
-- `hybrid`: the model recommendation and every applicable tag policy must agree
-- `auto`: a shared tag policy may be applied automatically
-
-No automatic action is taken when:
-
-- manual review is required
-- confidence is below the configured threshold
-- the domain is core or shared infrastructure
-- breakage risk is too high
-- tag policies conflict
-- the action conflicts with a protected list entry
-
-The concise LLM description is used as the Pi-hole comment for allow or deny actions.
+Pi-hole exposes version-specific API documentation at `http://pi.hole/api/docs`.
 
 ## Development
 
@@ -116,3 +230,32 @@ python -m pip install -e ".[dev]"
 pytest
 ruff check .
 ```
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/ROADMAP.md](docs/ROADMAP.md).
+
+## Update service
+
+Packaged Windows and Linux Onedir builds can update themselves from GitHub Releases. The updater
+selects the matching operating-system and CPU-architecture ZIP, verifies the published SHA-256
+digest when available, validates the embedded install manifest, and prepares the new version beside
+the running application. After the application closes, a small platform script replaces the program
+directory, preserves `options.json`, SQLite files, evidence caches, update downloads, and log files,
+then starts the new version. If the new version does not confirm a successful start, the previous
+Onedir directory is restored automatically. Source checkouts can download updates but are never
+overwritten automatically.
+
+The Application settings provide two channels:
+
+- **Stable releases** for normal version tags
+- **Prerelease versions** for beta, release-candidate, and automated `dev`-branch Onedir builds
+
+Update checks use the public GitHub Releases API. They remain unavailable while the repository is private; no GitHub token is stored or requested by the application.
+
+Container installations do not use the desktop self-updater. Docker or the chosen container manager
+pulls a new image and recreates the container while persistent data remains in mounted volumes. A
+future Home Assistant app uses the same container image and Home Assistant's own update flow.
+
+## Evidence source tests
+
+The Evidence Sources settings page can test the selected source or all configured sources.
+Tests use source-specific public test domains and exercise the actual parser without writing findings into the domain database. Each source can define its own test domain. Test all can independently skip every API-key source or only sources whose required key has not been configured. Skipped sources are counted in the completion line but omitted from the result table. The API-key field is shown only for source types that actually require one, and RDAP exposes its IANA bootstrap URL explicitly.

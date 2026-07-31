@@ -115,3 +115,51 @@ def test_non_json_success_returns_text() -> None:
     connection = PiHole6Connection("http://pi.hole", session=fake)  # type: ignore[arg-type]
 
     assert connection.get("plain") == "plain response"
+
+
+def test_shared_session_requests_are_serialized_between_threads() -> None:
+    import threading
+    import time
+
+    class TrackingSession(FakeSession):
+        def __init__(self) -> None:
+            super().__init__([FakeResponse(200, {"ok": True}) for _ in range(4)])
+            self.activity_lock = threading.Lock()
+            self.active = 0
+            self.max_active = 0
+
+        def request(self, **kwargs: Any) -> FakeResponse:
+            with self.activity_lock:
+                self.active += 1
+                self.max_active = max(self.max_active, self.active)
+            try:
+                time.sleep(0.02)
+                return super().request(**kwargs)
+            finally:
+                with self.activity_lock:
+                    self.active -= 1
+
+    session = TrackingSession()
+    connection = PiHole6Connection(
+        "http://pi.hole",
+        session=session,  # type: ignore[arg-type]
+    )
+    barrier = threading.Barrier(5)
+    errors: list[Exception] = []
+
+    def run_request() -> None:
+        barrier.wait()
+        try:
+            connection.get("info/version")
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=run_request) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    barrier.wait()
+    for thread in threads:
+        thread.join()
+
+    assert errors == []
+    assert session.max_active == 1

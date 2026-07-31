@@ -16,20 +16,16 @@ class PiHole6Metrics:
         return self.connection.get("history/clients", params={"N": max(0, clients)})
 
     def get_history_database(self, start: int, end: int) -> Any:
-        return self.connection.get(
-            "history/database", params={"from": start, "until": end}
-        )
+        return self.connection.get("history/database", params={"from": start, "until": end})
 
     def get_history_database_clients(self, start: int, end: int) -> Any:
-        return self.connection.get(
-            "history/database/clients", params={"from": start, "until": end}
-        )
+        return self.connection.get("history/database/clients", params={"from": start, "until": end})
 
     def get_queries(
         self,
         length: int = 100,
-        from_ts: int | None = None,
-        until_ts: int | None = None,
+        from_ts: float | None = None,
+        until_ts: float | None = None,
         upstream: str | None = None,
         domain: str | None = None,
         client: str | None = None,
@@ -57,9 +53,7 @@ class PiHole6Metrics:
         )
 
     def get_stats_database_summary(self, start: int, end: int) -> Any:
-        return self.connection.get(
-            "stats/database/summary", params={"from": start, "until": end}
-        )
+        return self.connection.get("stats/database/summary", params={"from": start, "until": end})
 
     def get_stats_database_top_clients(
         self, start: int, end: int, blocked: bool | None = None, count: int | None = None
@@ -91,9 +85,7 @@ class PiHole6Metrics:
         )
 
     def get_stats_database_upstreams(self, start: int, end: int) -> Any:
-        return self.connection.get(
-            "stats/database/upstreams", params={"from": start, "until": end}
-        )
+        return self.connection.get("stats/database/upstreams", params={"from": start, "until": end})
 
     def get_stats_query_types(self) -> Any:
         return self.connection.get("stats/query_types")
@@ -106,14 +98,10 @@ class PiHole6Metrics:
     def get_stats_summary(self) -> Any:
         return self.connection.get("stats/summary")
 
-    def get_stats_top_clients(
-        self, blocked: bool | None = None, count: int | None = None
-    ) -> Any:
+    def get_stats_top_clients(self, blocked: bool | None = None, count: int | None = None) -> Any:
         return self._top("clients", blocked, count)
 
-    def get_stats_top_domains(
-        self, blocked: bool | None = None, count: int | None = None
-    ) -> Any:
+    def get_stats_top_domains(self, blocked: bool | None = None, count: int | None = None) -> Any:
         return self._top("domains", blocked, count)
 
     def _top(self, resource: str, blocked: bool | None, count: int | None) -> Any:

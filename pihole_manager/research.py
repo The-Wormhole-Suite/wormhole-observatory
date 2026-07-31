@@ -1,364 +1,387 @@
 from __future__ import annotations
 
 import logging
-import threading
 import time
 from collections.abc import Callable
-from dataclasses import asdict
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from typing import Any
-from urllib.parse import quote
 
 import requests
 
 from pihole_manager.config import ResearchProviderOptions, load_options
-from pihole_manager.database import research_findings_get, save_research_findings
+from pihole_manager.database import (
+    get_domain_lock,
+    research_findings_get,
+    save_research_findings,
+)
 from pihole_manager.models import ResearchFinding
+from pihole_manager.research_catalogs import (
+    research_adguard_services,
+    research_disconnect_tracking,
+    research_phishtank,
+)
+from pihole_manager.research_common import (
+    ResearchError,
+    normalize_domain,
+    provider_snapshot,
+    register_provider_failure,
+    register_provider_success,
+)
+from pihole_manager.research_lookups import (
+    research_cloudflare_radar,
+    research_dns_records,
+    research_netcraft,
+    research_rdap,
+    research_ripestat,
+    research_threatfox,
+    research_urlscan,
+    research_virustotal,
+)
 
 log = logging.getLogger(__name__)
-
-_IANA_BOOTSTRAP_URL = "https://data.iana.org/rdap/dns.json"
-_RATE_LOCK = threading.RLock()
-_LAST_REQUEST: dict[str, float] = {}
-_BOOTSTRAP_LOCK = threading.RLock()
-_BOOTSTRAP_CACHE: tuple[float, dict[str, str]] | None = None
+_MAX_PROMPT_FINDINGS = 12
+_MAX_SUMMARY_LENGTH = 900
 
 
-class ResearchError(RuntimeError):
-    pass
+@dataclass(frozen=True, slots=True)
+class EvidenceSourceTestResult:
+    provider: str
+    kind: str
+    domain: str
+    status: str
+    finding_count: int
+    elapsed_ms: int
+    summary: str
+
+    @property
+    def success(self) -> bool:
+        return self.status == "pass"
+
+
+_TEST_DOMAINS = {
+    "adguard_services": "wechat.com",
+    "dns_records": "cloudflare.com",
+    "disconnect_tracking": "google-analytics.com",
+    "rdap": "example.com",
+    "ripestat": "cloudflare.com",
+    "netcraft": "google.com",
+    "virustotal": "example.com",
+    "threatfox": "example.com",
+    "phishtank": "example.com",
+    "urlscan": "google.com",
+    "cloudflare_radar": "google.com",
+}
+
+_PROVIDER_HANDLERS: dict[
+    str,
+    Callable[[str, ResearchProviderOptions], list[ResearchFinding]],
+] = {
+    "adguard_services": research_adguard_services,
+    "dns_records": research_dns_records,
+    "disconnect_tracking": research_disconnect_tracking,
+    "rdap": research_rdap,
+    "ripestat": research_ripestat,
+    "netcraft": research_netcraft,
+    "virustotal": research_virustotal,
+    "threatfox": research_threatfox,
+    "phishtank": research_phishtank,
+    "urlscan": research_urlscan,
+    "cloudflare_radar": research_cloudflare_radar,
+}
+
+
+def test_research_provider(
+    provider: ResearchProviderOptions,
+    *,
+    domain: str | None = None,
+    skip_api_key_sources: bool = False,
+    skip_missing_api_keys: bool = False,
+) -> EvidenceSourceTestResult:
+    selected_domain = normalize_domain(
+        domain or provider.test_domain or _TEST_DOMAINS.get(provider.kind, "example.com")
+    )
+    definition = provider_snapshot(provider)
+    requires_key = bool(definition.get("requires_api_key"))
+    if skip_api_key_sources and requires_key:
+        return EvidenceSourceTestResult(
+            provider=provider.name,
+            kind=provider.kind,
+            domain=selected_domain,
+            status="skip",
+            finding_count=0,
+            elapsed_ms=0,
+            summary="Skipped because this source requires an API key.",
+        )
+    if requires_key and not provider.api_key.strip():
+        status = "skip" if skip_missing_api_keys else "fail"
+        summary = (
+            "Skipped because no API key is configured."
+            if status == "skip"
+            else "API key is required but not configured."
+        )
+        return EvidenceSourceTestResult(
+            provider=provider.name,
+            kind=provider.kind,
+            domain=selected_domain,
+            status=status,
+            finding_count=0,
+            elapsed_ms=0,
+            summary=summary,
+        )
+    started = time.monotonic()
+    try:
+        findings = _run_provider_with_retries(selected_domain, provider)[: provider.max_results]
+    except Exception as exc:
+        return EvidenceSourceTestResult(
+            provider=provider.name,
+            kind=provider.kind,
+            domain=selected_domain,
+            status="fail",
+            finding_count=0,
+            elapsed_ms=int((time.monotonic() - started) * 1000),
+            summary=_test_error_summary(exc),
+        )
+    visible = [item for item in findings if item.raw_data.get("include_in_prompt", True)]
+    first = visible[0] if visible else findings[0] if findings else None
+    if first is None:
+        summary = "Source responded and the response was parsed successfully."
+    elif first.verdict == "no_match" or not first.raw_data.get("include_in_prompt", True):
+        summary = "Source responded successfully; no evidence matched the test domain."
+    else:
+        summary = f"{first.title} ({first.verdict})"
+    return EvidenceSourceTestResult(
+        provider=provider.name,
+        kind=provider.kind,
+        domain=selected_domain,
+        status="pass",
+        finding_count=len(visible),
+        elapsed_ms=int((time.monotonic() - started) * 1000),
+        summary=summary,
+    )
+
+
+def _test_error_summary(exc: Exception) -> str:
+    text = str(exc).strip().replace("\n", " ")
+    lowered = text.lower()
+    if "failed to resolve" in lowered or "nameresolutionerror" in lowered:
+        return "DNS resolution failed for the source host."
+    if "timed out" in lowered or "timeout" in lowered:
+        return "The source did not respond before the timeout."
+    if "401" in text or "403" in text:
+        return "Authentication was rejected by the source."
+    if "429" in text:
+        return "The source rate limit was reached."
+    return text[:500] or exc.__class__.__name__
 
 
 def research_domain(domain: str, *, force: bool = False) -> list[ResearchFinding]:
-    options = load_options()
-    normalized = domain.strip().lower().rstrip(".")
+    normalized = normalize_domain(domain)
     if not normalized:
         raise ValueError("domain must not be empty")
-    if not options.research.enabled:
-        return []
+    return research_many([normalized], force=force).get(normalized, [])
 
-    if not force:
-        cached = research_findings_get(normalized, fresh_only=True)
-        if cached:
-            return [_finding_from_row(row) for row in cached]
 
-    findings: list[ResearchFinding] = []
-    for provider in options.research_providers:
-        if not provider.enabled:
+def research_many(
+    domains: list[str],
+    *,
+    force: bool = False,
+) -> dict[str, list[ResearchFinding]]:
+    normalized_domains = list(
+        dict.fromkeys(normalized for value in domains if (normalized := normalize_domain(value)))
+    )
+    output: dict[str, list[ResearchFinding]] = {domain: [] for domain in normalized_domains}
+    if not normalized_domains:
+        return output
+
+    cached_by_domain: dict[str, list[ResearchFinding]] = {}
+    locked_domains: list[str] = []
+    for domain in normalized_domains:
+        cached = [
+            _finding_from_row(row)
+            for row in research_findings_get(domain, fresh_only=True, limit=500)
+        ]
+        cached_by_domain[domain] = cached
+        if get_domain_lock(domain) is not None:
+            locked_domains.append(domain)
+            output[domain] = cached
+        elif not force:
+            output[domain] = list(cached)
+
+    if force and locked_domains:
+        raise RuntimeError(
+            "Protected domain(s) cannot be refreshed. Unlock it before refreshing evidence: "
+            + ", ".join(locked_domains)
+        )
+
+    options = load_options()
+    providers = [provider for provider in options.research_providers if provider.enabled]
+    if not providers:
+        return output
+
+    pending: list[tuple[str, int, ResearchProviderOptions]] = []
+    locked = set(locked_domains)
+    for domain in normalized_domains:
+        if domain in locked:
             continue
-        try:
-            provider_findings = _run_provider(normalized, provider)
-        except Exception as exc:
-            log.warning("Research provider %s failed for %s: %s", provider.name, normalized, exc)
-            continue
-        findings.extend(provider_findings[: provider.max_results])
+        cached_providers = (
+            set() if force else {finding.provider for finding in cached_by_domain[domain]}
+        )
+        for provider_index, provider in enumerate(providers):
+            if provider.name not in cached_providers:
+                pending.append((domain, provider_index, provider))
+    if not pending:
+        return output
 
-    if findings:
-        save_research_findings(findings)
-    return findings
+    executors = [
+        ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix=f"evidence-{provider.kind}",
+        )
+        for provider in providers
+    ]
+    futures: dict[
+        Future[list[ResearchFinding]],
+        tuple[str, ResearchProviderOptions],
+    ] = {}
+    collected: list[ResearchFinding] = []
+    try:
+        for domain, provider_index, provider in pending:
+            future = executors[provider_index].submit(
+                _run_provider_with_retries,
+                domain,
+                provider,
+            )
+            futures[future] = (domain, provider)
+
+        for future in as_completed(futures):
+            domain, provider = futures[future]
+            try:
+                selected = future.result()[: provider.max_results]
+            except Exception as exc:
+                log.warning(
+                    "Evidence source %s failed for %s: %s",
+                    provider.name,
+                    domain,
+                    exc,
+                )
+                continue
+            output[domain].extend(selected)
+            collected.extend(selected)
+    finally:
+        for executor in executors:
+            executor.shutdown(wait=True, cancel_futures=False)
+
+    if collected:
+        save_research_findings(
+            collected,
+            default_max_age_days=getattr(
+                getattr(options, "research", None),
+                "max_age_days",
+                30,
+            ),
+        )
+    return output
 
 
-def research_many(domains: list[str], *, force: bool = False) -> dict[str, list[ResearchFinding]]:
-    return {domain: research_domain(domain, force=force) for domain in domains}
-
-
-def research_context(domain: str, findings: list[ResearchFinding] | None = None) -> dict[str, Any]:
+def research_context(
+    domain: str,
+    findings: list[ResearchFinding] | None = None,
+) -> dict[str, Any]:
+    normalized = normalize_domain(domain)
     selected = findings
     if selected is None:
         selected = [
             _finding_from_row(row)
-            for row in research_findings_get(domain, fresh_only=True)
+            for row in research_findings_get(normalized, fresh_only=True, limit=500)
         ]
+
+    visible = [item for item in selected if _include_in_prompt(item)]
+    visible.sort(
+        key=lambda item: (
+            not item.decision_relevant,
+            -float(item.confidence),
+            -int(item.retrieved_at),
+        )
+    )
+    prompt_findings = visible[:_MAX_PROMPT_FINDINGS]
     return {
-        "domain": domain.strip().lower().rstrip("."),
-        "findings": [
-            {
-                "provider": item.provider,
-                "kind": item.kind,
-                "title": item.title,
-                "summary": item.summary,
-                "source_url": item.source_url,
-                "confidence": item.confidence,
-                "retrieved_at": item.retrieved_at,
-            }
-            for item in selected
-        ],
+        "domain": normalized,
+        "finding_count": len(visible),
+        "decision_relevant_count": sum(1 for item in visible if item.decision_relevant),
+        "omitted_count": max(0, len(visible) - len(prompt_findings)),
+        "findings": [_compact_finding(item) for item in prompt_findings],
     }
 
 
-def _run_provider(domain: str, provider: ResearchProviderOptions) -> list[ResearchFinding]:
-    handlers: dict[str, Callable[[str, ResearchProviderOptions], list[ResearchFinding]]] = {
-        "rdap": _research_rdap,
-        "github_code": _research_github,
-        "brave_search": _research_brave,
-        "virustotal": _research_virustotal,
-    }
-    handler = handlers.get(provider.kind)
+def _run_provider(
+    domain: str,
+    provider: ResearchProviderOptions,
+) -> list[ResearchFinding]:
+    handler = _PROVIDER_HANDLERS.get(provider.kind)
     if handler is None:
-        raise ResearchError(f"Unsupported research provider kind: {provider.kind}")
-    _wait_for_provider(provider)
+        raise ResearchError(f"Unsupported evidence source kind: {provider.kind}")
     return handler(domain, provider)
 
 
-def _wait_for_provider(provider: ResearchProviderOptions) -> None:
-    key = f"{provider.kind}:{provider.name}"
-    with _RATE_LOCK:
-        elapsed = time.monotonic() - _LAST_REQUEST.get(key, 0.0)
-        delay = max(0.0, provider.min_interval_sec - elapsed)
-    if delay:
-        time.sleep(delay)
-    with _RATE_LOCK:
-        _LAST_REQUEST[key] = time.monotonic()
+def _run_provider_with_retries(
+    domain: str,
+    provider: ResearchProviderOptions,
+) -> list[ResearchFinding]:
+    attempts = max(1, load_options().llm.max_retries + 1)
+    for attempt in range(attempts):
+        try:
+            findings = _run_provider(domain, provider)
+        except requests.HTTPError as exc:
+            response = exc.response
+            status_code = response.status_code if response is not None else 0
+            if status_code not in {408, 429, 500, 502, 503, 504}:
+                raise
+            register_provider_failure(provider, attempt, response)
+            if attempt + 1 >= attempts:
+                raise
+        except (requests.ConnectionError, requests.Timeout):
+            register_provider_failure(provider, attempt)
+            if attempt + 1 >= attempts:
+                raise
+        else:
+            register_provider_success(provider)
+            return findings
+    raise RuntimeError(f"Evidence source {provider.name} exhausted its retries")
 
 
-def _research_rdap(domain: str, provider: ResearchProviderOptions) -> list[ResearchFinding]:
-    bootstrap = _rdap_bootstrap(provider.timeout_sec)
-    labels = domain.split(".")
-    if len(labels) < 2:
-        return []
-    server = bootstrap.get(labels[-1])
-    if not server:
-        return []
-
-    response: requests.Response | None = None
-    candidate = domain
-    for index in range(max(0, len(labels) - 4), len(labels) - 1):
-        candidate = ".".join(labels[index:])
-        url = f"{server.rstrip('/')}/domain/{quote(candidate, safe='.-_')}"
-        response = requests.get(
-            url,
-            headers={"Accept": "application/rdap+json, application/json"},
-            timeout=provider.timeout_sec,
-            allow_redirects=True,
-        )
-        if response.status_code == 404:
-            continue
-        response.raise_for_status()
-        break
-    if response is None or response.status_code == 404:
-        return []
-
-    data = response.json()
-    registrar = _rdap_registrar(data)
-    statuses = ", ".join(str(value) for value in data.get("status") or [])
-    nameservers = ", ".join(
-        str(item.get("ldhName") or "")
-        for item in data.get("nameservers") or []
-        if isinstance(item, dict) and item.get("ldhName")
-    )
-    events = {
-        str(item.get("eventAction") or ""): str(item.get("eventDate") or "")
-        for item in data.get("events") or []
-        if isinstance(item, dict)
+def _compact_finding(item: ResearchFinding) -> dict[str, Any]:
+    return {
+        "provider": item.provider,
+        "kind": item.kind,
+        "signal_type": item.signal_type,
+        "verdict": item.verdict,
+        "decision_relevant": item.decision_relevant,
+        "title": item.title,
+        "summary": item.summary[:_MAX_SUMMARY_LENGTH],
+        "source_url": item.source_url,
+        "confidence": round(float(item.confidence), 3),
+        "retrieved_at": item.retrieved_at,
     }
-    parts = [f"Registered domain: {data.get('ldhName') or candidate}"]
-    if registrar:
-        parts.append(f"Registrar: {registrar}")
-    if events.get("registration"):
-        parts.append(f"Registered: {events['registration']}")
-    if events.get("expiration"):
-        parts.append(f"Expires: {events['expiration']}")
-    if statuses:
-        parts.append(f"Status: {statuses}")
-    if nameservers:
-        parts.append(f"Nameservers: {nameservers}")
-    now = int(time.time())
-    return [
-        ResearchFinding(
-            domain=domain,
-            provider=provider.name,
-            kind="registration",
-            title=f"RDAP registration for {candidate}",
-            summary="; ".join(parts),
-            source_url=response.url,
-            confidence=0.98,
-            retrieved_at=now,
-            expires_at=now + load_options().research.max_age_days * 86400,
-            raw_data=data,
-        )
-    ]
 
 
-def _rdap_bootstrap(timeout: float) -> dict[str, str]:
-    global _BOOTSTRAP_CACHE
-    with _BOOTSTRAP_LOCK:
-        if _BOOTSTRAP_CACHE and time.time() - _BOOTSTRAP_CACHE[0] < 86400:
-            return dict(_BOOTSTRAP_CACHE[1])
-        response = requests.get(_IANA_BOOTSTRAP_URL, timeout=timeout)
-        response.raise_for_status()
-        data = response.json()
-        mapping: dict[str, str] = {}
-        for service in data.get("services") or []:
-            if not isinstance(service, list) or len(service) != 2:
-                continue
-            tlds, urls = service
-            if not urls:
-                continue
-            for tld in tlds:
-                mapping[str(tld).lower()] = str(urls[0])
-        _BOOTSTRAP_CACHE = (time.time(), mapping)
-        return dict(mapping)
-
-
-def _rdap_registrar(data: dict[str, Any]) -> str:
-    for entity in data.get("entities") or []:
-        if not isinstance(entity, dict) or "registrar" not in (entity.get("roles") or []):
-            continue
-        vcard = entity.get("vcardArray")
-        if not isinstance(vcard, list) or len(vcard) != 2:
-            continue
-        for item in vcard[1]:
-            if isinstance(item, list) and len(item) >= 4 and item[0] in {"fn", "org"}:
-                return str(item[3])
-    return ""
-
-
-def _research_github(domain: str, provider: ResearchProviderOptions) -> list[ResearchFinding]:
-    if not provider.api_key.strip():
-        return []
-    base_url = (provider.base_url or "https://api.github.com").rstrip("/")
-    response = requests.get(
-        f"{base_url}/search/code",
-        params={"q": f'"{domain}" in:file', "per_page": provider.max_results},
-        headers={
-            "Accept": "application/vnd.github.text-match+json",
-            "Authorization": f"Bearer {provider.api_key}",
-            "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "Pi-Hole-Manager",
-        },
-        timeout=provider.timeout_sec,
-    )
-    response.raise_for_status()
-    data = response.json()
-    now = int(time.time())
-    findings: list[ResearchFinding] = []
-    for item in data.get("items") or []:
-        if not isinstance(item, dict):
-            continue
-        repository = item.get("repository") or {}
-        repo_name = str(repository.get("full_name") or "unknown repository")
-        fragments = []
-        for match in item.get("text_matches") or []:
-            if isinstance(match, dict) and match.get("fragment"):
-                fragments.append(str(match["fragment"]).strip())
-        summary = f"Domain referenced in {repo_name}/{item.get('path') or item.get('name') or ''}."
-        if fragments:
-            summary += " Context: " + " ".join(fragments)[:1000]
-        findings.append(
-            ResearchFinding(
-                domain=domain,
-                provider=provider.name,
-                kind="github_code",
-                title=f"GitHub reference in {repo_name}",
-                summary=summary,
-                source_url=str(item.get("html_url") or ""),
-                confidence=0.7,
-                retrieved_at=now,
-                expires_at=now + load_options().research.max_age_days * 86400,
-                raw_data=item,
-            )
-        )
-    return findings
-
-
-def _research_brave(domain: str, provider: ResearchProviderOptions) -> list[ResearchFinding]:
-    if not provider.api_key.strip():
-        return []
-    url = provider.base_url or "https://api.search.brave.com/res/v1/web/search"
-    query = f'"{domain}" (Pi-hole OR blocklist OR whitelist OR tracker OR telemetry OR GitHub)'
-    response = requests.get(
-        url,
-        params={"q": query, "count": provider.max_results, "safesearch": "moderate"},
-        headers={
-            "Accept": "application/json",
-            "Accept-Encoding": "gzip",
-            "X-Subscription-Token": provider.api_key,
-            "User-Agent": "Pi-Hole-Manager",
-        },
-        timeout=provider.timeout_sec,
-    )
-    response.raise_for_status()
-    data = response.json()
-    now = int(time.time())
-    results = ((data.get("web") or {}).get("results") or [])[: provider.max_results]
-    return [
-        ResearchFinding(
-            domain=domain,
-            provider=provider.name,
-            kind="web_search",
-            title=str(item.get("title") or "Web search result"),
-            summary=str(item.get("description") or ""),
-            source_url=str(item.get("url") or ""),
-            confidence=0.55,
-            retrieved_at=now,
-            expires_at=now + load_options().research.max_age_days * 86400,
-            raw_data=item,
-        )
-        for item in results
-        if isinstance(item, dict)
-    ]
-
-
-def _research_virustotal(domain: str, provider: ResearchProviderOptions) -> list[ResearchFinding]:
-    if not provider.api_key.strip():
-        return []
-    base_url = (provider.base_url or "https://www.virustotal.com/api/v3").rstrip("/")
-    response = requests.get(
-        f"{base_url}/domains/{quote(domain, safe='.-_')}",
-        headers={"Accept": "application/json", "x-apikey": provider.api_key},
-        timeout=provider.timeout_sec,
-    )
-    if response.status_code == 404:
-        return []
-    response.raise_for_status()
-    data = response.json()
-    attributes = ((data.get("data") or {}).get("attributes") or {})
-    stats = attributes.get("last_analysis_stats") or {}
-    categories = attributes.get("categories") or {}
-    summary = (
-        f"VirusTotal analysis: malicious={stats.get('malicious', 0)}, "
-        f"suspicious={stats.get('suspicious', 0)}, harmless={stats.get('harmless', 0)}, "
-        f"undetected={stats.get('undetected', 0)}. "
-        f"Reputation={attributes.get('reputation', 0)}."
-    )
-    if categories:
-        summary += " Categories: " + ", ".join(
-            f"{key}={value}" for key, value in list(categories.items())[:10]
-        )
-    now = int(time.time())
-    return [
-        ResearchFinding(
-            domain=domain,
-            provider=provider.name,
-            kind="threat_intelligence",
-            title="VirusTotal domain report",
-            summary=summary,
-            source_url=f"https://www.virustotal.com/gui/domain/{domain}",
-            confidence=0.9,
-            retrieved_at=now,
-            expires_at=now + min(7, load_options().research.max_age_days) * 86400,
-            raw_data=data,
-        )
-    ]
+def _include_in_prompt(item: ResearchFinding) -> bool:
+    return bool(item.raw_data.get("include_in_prompt", True))
 
 
 def _finding_from_row(row: dict[str, Any]) -> ResearchFinding:
-    payload = dict(row)
-    payload.pop("id", None)
     return ResearchFinding(
-        domain=str(payload.get("domain") or ""),
-        provider=str(payload.get("provider") or ""),
-        kind=str(payload.get("kind") or ""),
-        title=str(payload.get("title") or ""),
-        summary=str(payload.get("summary") or ""),
-        source_url=str(payload.get("source_url") or ""),
-        confidence=float(payload.get("confidence") or 0.0),
-        retrieved_at=int(payload.get("retrieved_at") or 0),
-        expires_at=int(payload.get("expires_at") or 0),
-        raw_data=dict(payload.get("raw_data") or {}),
+        domain=str(row.get("domain") or ""),
+        provider=str(row.get("provider") or ""),
+        kind=str(row.get("kind") or ""),
+        title=str(row.get("title") or ""),
+        summary=str(row.get("summary") or ""),
+        source_url=str(row.get("source_url") or ""),
+        confidence=float(row.get("confidence") or 0.0),
+        signal_type=str(row.get("signal_type") or "context"),
+        verdict=str(row.get("verdict") or "unknown"),
+        decision_relevant=bool(row.get("decision_relevant", False)),
+        retrieved_at=int(row.get("retrieved_at") or 0),
+        expires_at=int(row.get("expires_at") or 0),
+        raw_data=dict(row.get("raw_data") or {}),
     )
-
-
-def provider_snapshot(provider: ResearchProviderOptions) -> dict[str, Any]:
-    data = asdict(provider)
-    if data.get("api_key"):
-        data["api_key"] = "***"
-    return data

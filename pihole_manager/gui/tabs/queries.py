@@ -7,11 +7,22 @@ from tkinter import messagebox, ttk
 from typing import Any
 
 from pihole_manager.config import load_options, save_options
-from pihole_manager.database import staging_enqueue
+from pihole_manager.database import queue_domains_for_review
+from pihole_manager.gui.column_visibility import ColumnVisibilityController
+from pihole_manager.gui.feedback import show_toast
+from pihole_manager.gui.policy_labels import action_label
 from pihole_manager.models import Policy
 from pihole_manager.pihole_service import add_exact_domain, fetch_queries
 
 _COLUMNS = ("selected", "time", "client", "domain", "type", "status")
+_HEADINGS = {
+    "selected": "✓",
+    "time": "Time",
+    "client": "Client",
+    "domain": "Domain",
+    "type": "Type",
+    "status": "Status",
+}
 
 
 class QueriesTab(ttk.Frame):
@@ -20,9 +31,10 @@ class QueriesTab(ttk.Frame):
         self.executor = executor
         self._rows: dict[str, dict[str, Any]] = {}
         self._checked: set[str] = set()
-        self._last_timestamp = int(time.time()) - 60
+        self._last_timestamp = time.time() - 60.0
         self._request_running = False
-        self._layout_after_id: str | None = None
+        self._failure_count = 0
+        self._next_poll_at = 0.0
         self._build_ui()
         self.reload_preferences()
         self.after(250, self._poll_loop)
@@ -31,77 +43,108 @@ class QueriesTab(ttk.Frame):
         toolbar = ttk.Frame(self, padding=(8, 6))
         toolbar.pack(fill="x")
         ttk.Button(toolbar, text="Refresh", command=self.refresh).pack(side="left")
-        ttk.Button(toolbar, text="→ LLM", command=self._queue_selected).pack(
+        ttk.Button(toolbar, text="→ Review", command=self._queue_selected).pack(
             side="left", padx=(6, 0)
         )
         ttk.Button(
-            toolbar, text="Allow exact", command=lambda: self._apply_selected(Policy.ALLOW)
+            toolbar, text="Whitelist exact", command=lambda: self._apply_selected(Policy.ALLOW)
         ).pack(side="left", padx=(12, 0))
         ttk.Button(
-            toolbar, text="Deny exact", command=lambda: self._apply_selected(Policy.DENY)
+            toolbar, text="Blacklist exact", command=lambda: self._apply_selected(Policy.DENY)
         ).pack(side="left", padx=(6, 0))
+        self.columns_button = ttk.Menubutton(toolbar, text="Columns")
+        self.columns_button.pack(side="left", padx=(12, 0))
 
         self.auto_update = tk.BooleanVar()
         self.auto_scroll = tk.BooleanVar()
+        self.refresh_seconds = tk.StringVar()
+        self.status = tk.StringVar(value="Idle")
+        preferences = ttk.Frame(toolbar)
+        preferences.pack(side="right")
+        ttk.Label(preferences, textvariable=self.status).pack(side="left", padx=(0, 14))
         ttk.Checkbutton(
-            toolbar,
-            text="Auto-update",
-            variable=self.auto_update,
-            command=self._save_preferences,
-        ).pack(side="right")
-        ttk.Checkbutton(
-            toolbar,
+            preferences,
             text="Auto-scroll",
             variable=self.auto_scroll,
             command=self._save_preferences,
-        ).pack(side="right", padx=(0, 10))
-        self.status = tk.StringVar(value="Idle")
-        ttk.Label(toolbar, textvariable=self.status).pack(side="right", padx=(0, 14))
+        ).pack(side="left", padx=(0, 10))
+        ttk.Checkbutton(
+            preferences,
+            text="Auto-update",
+            variable=self.auto_update,
+            command=self._save_preferences,
+        ).pack(side="left", padx=(0, 10))
+        ttk.Label(preferences, text="Refresh every").pack(side="left", padx=(0, 4))
+        refresh_box = ttk.Spinbox(
+            preferences,
+            textvariable=self.refresh_seconds,
+            from_=0.5,
+            to=300.0,
+            increment=0.5,
+            width=6,
+            command=self._save_preferences,
+        )
+        refresh_box.pack(side="left")
+        refresh_box.bind("<Return>", lambda _event: self._save_preferences())
+        refresh_box.bind("<FocusOut>", lambda _event: self._save_preferences())
+        ttk.Label(preferences, text="s").pack(side="left", padx=(4, 0))
 
+        tree_frame = ttk.Frame(self, padding=(8, 0, 8, 8))
+        tree_frame.pack(fill="both", expand=True)
+        tree_frame.rowconfigure(0, weight=1)
+        tree_frame.columnconfigure(0, weight=1)
         self.tree = ttk.Treeview(
-            self,
+            tree_frame,
             columns=_COLUMNS,
             show="headings",
             selectmode="extended",
         )
-        self.tree.pack(fill="both", expand=True, padx=8, pady=(0, 8))
-        headings = {
-            "selected": "✓",
-            "time": "Time",
-            "client": "Client",
-            "domain": "Domain",
-            "type": "Type",
-            "status": "Status",
-        }
-        for column, heading in headings.items():
+        vertical = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
+        horizontal = ttk.Scrollbar(tree_frame, orient="horizontal", command=self.tree.xview)
+        self.tree.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        vertical.grid(row=0, column=1, sticky="ns")
+        horizontal.grid(row=1, column=0, sticky="ew")
+        for column, heading in _HEADINGS.items():
             self.tree.heading(column, text=heading)
         self.tree.bind("<Button-1>", self._toggle_checkbox, add=True)
-        self.tree.bind("<ButtonRelease-1>", self._schedule_layout_save, add=True)
-        self.tree.bind("<Configure>", self._schedule_layout_save, add=True)
+        self.column_controller = ColumnVisibilityController(
+            self.columns_button,
+            self.tree,
+            table_key="queries",
+            columns=_COLUMNS,
+            headings=_HEADINGS,
+        )
 
         menu = tk.Menu(self, tearoff=False)
-        menu.add_command(label="Queue for LLM", command=self._queue_selected)
+        menu.add_command(label="Queue for review", command=self._queue_selected)
         menu.add_separator()
-        menu.add_command(label="Allow exact", command=lambda: self._apply_selected(Policy.ALLOW))
-        menu.add_command(label="Deny exact", command=lambda: self._apply_selected(Policy.DENY))
+        menu.add_command(
+            label="Whitelist exact",
+            command=lambda: self._apply_selected(Policy.ALLOW),
+        )
+        menu.add_command(label="Blacklist exact", command=lambda: self._apply_selected(Policy.DENY))
         self.menu = menu
         self.tree.bind("<Button-3>", self._show_context_menu)
 
     def reload_preferences(self) -> None:
         options = load_options().ui
         self.auto_update.set(options.auto_update_queries)
+        if self.auto_update.get():
+            self._next_poll_at = 0.0
         self.auto_scroll.set(options.auto_scroll_queries)
+        self.refresh_seconds.set(f"{options.query_refresh_ms / 1000:g}")
         for column in _COLUMNS:
-            width = int(options.queries_colwidths.get(column, 120))
             self.tree.column(
                 column,
-                width=width,
                 anchor="center" if column in {"selected", "time", "type", "status"} else "w",
                 stretch=column != "selected",
             )
+        self.column_controller.reload()
 
     def _poll_loop(self) -> None:
-        if self.auto_update.get() and not self._request_running:
+        now = time.monotonic()
+        if self.auto_update.get() and not self._request_running and now >= self._next_poll_at:
             self.refresh()
         self.after(load_options().ui.query_refresh_ms, self._poll_loop)
 
@@ -118,12 +161,18 @@ class QueriesTab(ttk.Frame):
         try:
             rows = future.result()
         except Exception as exc:
-            self.status.set(f"Error: {exc}")
+            self._failure_count += 1
+            base_delay = load_options().ui.query_refresh_ms / 1000
+            retry_delay = min(60.0, max(base_delay, 2 ** min(self._failure_count, 6)))
+            self._next_poll_at = time.monotonic() + retry_delay
+            self.status.set(f"Connection failed · retry in {int(retry_delay)} s: {exc}")
             return
 
+        self._failure_count = 0
+        self._next_poll_at = 0.0
         added = 0
         for row in rows:
-            timestamp = int(row.get("time") or 0)
+            timestamp = float(row.get("time") or 0)
             identifier = "|".join(
                 (
                     str(timestamp),
@@ -135,7 +184,7 @@ class QueriesTab(ttk.Frame):
             )
             self._rows[identifier] = row
             self._insert_row(identifier, row)
-            self._last_timestamp = max(self._last_timestamp, timestamp + 1)
+            self._last_timestamp = max(self._last_timestamp, timestamp + 0.001)
             added += 1
 
         children = self.tree.get_children()
@@ -152,7 +201,7 @@ class QueriesTab(ttk.Frame):
         self.status.set(f"{added} new · {len(self.tree.get_children())} shown")
 
     def _insert_row(self, identifier: str, row: dict[str, Any]) -> None:
-        timestamp = int(row.get("time") or 0)
+        timestamp = float(row.get("time") or 0)
         formatted = time.strftime("%H:%M:%S", time.localtime(timestamp)) if timestamp else ""
         domain = str(row.get("domain") or "")
         selected = "☑" if domain in self._checked else "☐"
@@ -171,7 +220,7 @@ class QueriesTab(ttk.Frame):
         )
 
     def _toggle_checkbox(self, event: tk.Event) -> None:
-        if self.tree.identify_column(event.x) != "#1":
+        if self.column_controller.displayed_column_at(event.x) != "selected":
             return
         item = self.tree.identify_row(event.y)
         if not item:
@@ -197,10 +246,21 @@ class QueriesTab(ttk.Frame):
     def _queue_selected(self) -> None:
         domains = self._selected_domains()
         if not domains:
-            messagebox.showinfo("Live Queries", "Select or check at least one domain.")
+            show_toast(self, "Select or check at least one domain.")
             return
-        added = staging_enqueue(domains)
-        messagebox.showinfo("LLM", f"Queued {added} new domain(s) for analysis.")
+        result = queue_domains_for_review(domains, source="manual_live_query")
+        parts = []
+        if result.queued:
+            parts.append(f"{result.queued} queued")
+        if result.requeued:
+            parts.append(f"{result.requeued} requeued")
+        if result.already_pending:
+            parts.append(f"{result.already_pending} already pending")
+        if result.skipped_locked:
+            parts.append(f"{result.skipped_locked} protected")
+        if result.skipped_filtered:
+            parts.append(f"{result.skipped_filtered} filtered")
+        show_toast(self, ", ".join(parts) or "No domains queued.")
 
     def _apply_selected(self, policy: Policy) -> None:
         domains = self._selected_domains()
@@ -229,7 +289,7 @@ class QueriesTab(ttk.Frame):
         except Exception as exc:
             self.status.set(f"Error: {exc}")
             return
-        self.status.set(f"{policy.value}: {successful} applied")
+        self.status.set(f"{action_label(policy)}: {successful} applied")
         if errors:
             messagebox.showwarning(
                 "Live Queries", "Some changes failed:\n" + "\n".join(errors[:10])
@@ -246,19 +306,16 @@ class QueriesTab(ttk.Frame):
 
     def _save_preferences(self) -> None:
         options = load_options()
+        try:
+            refresh_seconds = max(0.5, float(self.refresh_seconds.get()))
+        except ValueError:
+            self.refresh_seconds.set(f"{options.ui.query_refresh_ms / 1000:g}")
+            return
         options.ui.auto_update_queries = self.auto_update.get()
+        if self.auto_update.get():
+            self._failure_count = 0
+            self._next_poll_at = 0.0
         options.ui.auto_scroll_queries = self.auto_scroll.get()
-        save_options(options)
-
-    def _schedule_layout_save(self, _event: tk.Event | None = None) -> None:
-        if self._layout_after_id:
-            self.after_cancel(self._layout_after_id)
-        self._layout_after_id = self.after(500, self._save_layout)
-
-    def _save_layout(self) -> None:
-        self._layout_after_id = None
-        options = load_options()
-        options.ui.queries_colwidths = {
-            column: int(self.tree.column(column, option="width")) for column in _COLUMNS
-        }
+        options.ui.query_refresh_ms = round(refresh_seconds * 1000)
+        self.refresh_seconds.set(f"{options.ui.query_refresh_ms / 1000:g}")
         save_options(options)

@@ -1,18 +1,24 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import tempfile
 import threading
 from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 from pihole_manager.models import AutomationMode, Policy
 
 T = TypeVar("T")
 _CONFIG_LOCK = threading.RLock()
-CURRENT_SCHEMA_VERSION = 3
+CURRENT_SCHEMA_VERSION = 16
+log = logging.getLogger(__name__)
+
+
+class UnsupportedConfigVersionError(RuntimeError):
+    pass
 
 
 @dataclass(slots=True)
@@ -40,6 +46,11 @@ class ScanOptions:
     initial_lookback_sec: int = 300
     queue_trigger_size: int = 20
     max_queue_wait_sec: int = 300
+    history_backfill_enabled: bool = False
+    history_idle_after_sec: int = 300
+    history_lookback_days: int = 30
+    history_batch_size: int = 500
+    excluded_domain_suffixes: list[str] = field(default_factory=lambda: [".arpa"])
 
 
 @dataclass(slots=True)
@@ -52,12 +63,17 @@ class PiHoleOptions:
 
 @dataclass(slots=True)
 class LLMProviderOptions:
-    name: str = "Local or OpenAI-compatible"
+    name: str = "Custom OpenAI-compatible"
+    preset_id: str = "custom"
+    api_style: str = "openai_compatible"
     base_url: str = ""
     api_key: str = ""
     model: str = ""
     temperature: float = 0.0
     timeout_sec: float = 30.0
+    max_output_tokens: int = 4096
+    max_tokens_parameter: str = "max_tokens"
+    send_temperature: bool = True
     structured_output: str = "auto"
 
 
@@ -65,9 +81,18 @@ class LLMProviderOptions:
 class PromptProfileOptions:
     name: str = "Balanced"
     system: str = (
-        "You classify DNS domains for a Pi-hole v6 administrator. "
-        "Use the supplied evidence, distinguish facts from inference, and prefer "
-        "manual review when evidence is weak or blocking may break an important service."
+        "You classify DNS domains for a Pi-hole v6 administrator. Start with the "
+        "supplied domain dossier and distinguish verified facts from inference. If the "
+        "selected model and API perform live web search without an additional tool request, "
+        "independently verify "
+        "the exact domain using official vendor documentation, GitHub code, issues and "
+        "discussions, Pi-hole community reports, reputable blocklist repositories such "
+        "as AdGuardTeam/HostlistsRegistry, hagezi/dns-blocklists, easylist/easylist, "
+        "disconnectme/disconnect-tracking-protection, and credible user reports. "
+        "Pi-hole Manager does not currently invoke provider-specific web-search tools. Never "
+        "claim to have searched the web when browsing is not available. Include "
+        "useful source URLs in details when known, and prefer manual "
+        "review when evidence is weak or blocking may break an important service."
     )
     user_template: str = (
         "Analyse the following domain dossiers. Return only the required structured result.\n"
@@ -117,6 +142,27 @@ _DEFAULT_TAG_POLICIES = {
     "unknown": Policy.MANUAL_REVIEW.value,
 }
 
+_DEFAULT_TAG_RECHECK_DAYS = {
+    "advertising": 30,
+    "cross_site_tracking": 30,
+    "analytics": 30,
+    "telemetry": 30,
+    "crash_reporting": 30,
+    "authentication": 90,
+    "payments": 90,
+    "api_backend": 60,
+    "content_media": 60,
+    "cdn_shared_infrastructure": 90,
+    "software_updates": 60,
+    "notifications_messaging": 60,
+    "security_antifraud": 60,
+    "iot_cloud": 45,
+    "malware": 7,
+    "phishing": 7,
+    "command_and_control": 7,
+    "unknown": 3,
+}
+
 
 @dataclass(slots=True)
 class LLMOptions:
@@ -129,12 +175,15 @@ class LLMOptions:
     active_provider_index: int = 0
     active_profile_index: int = 0
     automation_mode: str = AutomationMode.HYBRID.value
+    simulation_mode: bool = True
     default_recheck_days: int = 30
     review_confidence_threshold: float = 0.75
     auto_action_min_confidence: float = 0.95
+    require_research_for_auto_action: bool = True
     tags: list[str] = field(default_factory=lambda: list(_DEFAULT_TAGS))
-    tag_policies: dict[str, str] = field(
-        default_factory=lambda: dict(_DEFAULT_TAG_POLICIES)
+    tag_policies: dict[str, str] = field(default_factory=lambda: dict(_DEFAULT_TAG_POLICIES))
+    tag_recheck_days: dict[str, int] = field(
+        default_factory=lambda: dict(_DEFAULT_TAG_RECHECK_DAYS)
     )
 
     @property
@@ -164,39 +213,44 @@ class LLMOptions:
 
 @dataclass(slots=True)
 class ResearchOptions:
-    enabled: bool = False
-    run_before_llm: bool = True
     max_age_days: int = 30
-    timeout_sec: float = 15.0
-    max_results_per_provider: int = 5
+
+
+@dataclass(slots=True)
+class UpdateOptions:
+    check_automatically: bool = False
+    channel: str = "stable"
+    check_interval_hours: int = 24
+    last_check_at: int = 0
 
 
 @dataclass(slots=True)
 class ResearchProviderOptions:
     name: str = "RDAP registration data"
     kind: str = "rdap"
-    enabled: bool = True
+    enabled: bool = False
     base_url: str = ""
     api_key: str = ""
     timeout_sec: float = 15.0
     min_interval_sec: float = 1.0
+    refresh_interval_hours: int = 24
     max_results: int = 5
-
-
-@dataclass(slots=True)
-class LockOptions:
-    enabled: bool = True
-    reconcile_interval_sec: int = 60
+    test_domain: str = ""
 
 
 @dataclass(slots=True)
 class UIOptions:
     theme: str = "system"
+    show_tooltips: bool = True
     window_width: int = 1280
     window_height: int = 820
-    auto_update_queries: bool = True
+    auto_update_queries: bool = False
     query_refresh_ms: int = 2_000
     auto_scroll_queries: bool = True
+    history_deduplicate_domains: bool = True
+    evidence_test_skip_api_key_sources: bool = False
+    evidence_test_skip_missing_api_keys: bool = True
+    lists_queue_only_unreviewed: bool = True
     queries_colwidths: dict[str, int] = field(
         default_factory=lambda: {
             "selected": 38,
@@ -205,6 +259,156 @@ class UIOptions:
             "domain": 360,
             "type": 80,
             "status": 140,
+        }
+    )
+    table_visible_columns: dict[str, list[str]] = field(
+        default_factory=lambda: {
+            "queries": ["selected", "time", "client", "domain", "type", "status"],
+            "history": ["selected", "time", "client", "domain", "type", "status", "classified"],
+            "lists": ["selected", "locked", "domain", "enabled", "tags", "details"],
+            "review": [
+                "selected",
+                "order",
+                "queued",
+                "lock",
+                "domain",
+                "tags",
+                "service",
+                "role",
+                "policy",
+                "planned",
+                "confidence",
+                "breakage",
+                "short",
+                "status",
+            ],
+            "domains": [
+                "domain",
+                "tags",
+                "service",
+                "role",
+                "policy",
+                "planned",
+                "confidence",
+                "breakage",
+                "queries",
+                "last_seen",
+                "review",
+                "short",
+            ],
+        }
+    )
+    table_column_order: dict[str, list[str]] = field(
+        default_factory=lambda: {
+            "queries": ["selected", "time", "client", "domain", "type", "status"],
+            "history": ["selected", "time", "client", "domain", "type", "status", "classified"],
+            "lists": ["selected", "locked", "domain", "enabled", "comment", "tags", "details"],
+            "review": [
+                "selected",
+                "order",
+                "queued",
+                "lock",
+                "domain",
+                "tags",
+                "service",
+                "role",
+                "policy",
+                "planned",
+                "confidence",
+                "privacy",
+                "security",
+                "breakage",
+                "short",
+                "status",
+            ],
+            "domains": [
+                "domain",
+                "tags",
+                "service",
+                "role",
+                "policy",
+                "planned",
+                "confidence",
+                "privacy",
+                "security",
+                "breakage",
+                "queries",
+                "last_seen",
+                "classified",
+                "recheck",
+                "review",
+                "lock",
+                "provider",
+                "short",
+            ],
+        }
+    )
+    table_column_widths: dict[str, dict[str, int]] = field(
+        default_factory=lambda: {
+            "queries": {
+                "selected": 38,
+                "time": 90,
+                "client": 170,
+                "domain": 360,
+                "type": 80,
+                "status": 140,
+            },
+            "history": {
+                "selected": 38,
+                "time": 150,
+                "client": 180,
+                "domain": 390,
+                "type": 80,
+                "status": 150,
+                "classified": 90,
+            },
+            "lists": {
+                "selected": 38,
+                "locked": 58,
+                "domain": 290,
+                "enabled": 70,
+                "comment": 260,
+                "tags": 230,
+                "details": 430,
+            },
+            "review": {
+                "selected": 38,
+                "order": 48,
+                "queued": 115,
+                "lock": 48,
+                "domain": 250,
+                "tags": 230,
+                "service": 180,
+                "role": 80,
+                "policy": 105,
+                "planned": 95,
+                "confidence": 65,
+                "privacy": 65,
+                "security": 65,
+                "breakage": 90,
+                "short": 300,
+                "status": 120,
+            },
+            "domains": {
+                "domain": 280,
+                "tags": 240,
+                "service": 180,
+                "role": 80,
+                "policy": 105,
+                "planned": 95,
+                "confidence": 65,
+                "privacy": 65,
+                "security": 65,
+                "breakage": 70,
+                "queries": 80,
+                "last_seen": 135,
+                "classified": 135,
+                "recheck": 135,
+                "review": 65,
+                "lock": 70,
+                "provider": 150,
+                "short": 340,
+            },
         }
     )
 
@@ -218,28 +422,58 @@ class Options:
     pihole: PiHoleOptions = field(default_factory=PiHoleOptions)
     llm: LLMOptions = field(default_factory=LLMOptions)
     research: ResearchOptions = field(default_factory=ResearchOptions)
-    locks: LockOptions = field(default_factory=LockOptions)
-    llm_providers: list[LLMProviderOptions] = field(
-        default_factory=lambda: [LLMProviderOptions()]
-    )
+    updates: UpdateOptions = field(default_factory=UpdateOptions)
+    llm_providers: list[LLMProviderOptions] = field(default_factory=lambda: [LLMProviderOptions()])
     prompt_profiles: list[PromptProfileOptions] = field(
         default_factory=lambda: [PromptProfileOptions()]
     )
     research_providers: list[ResearchProviderOptions] = field(
         default_factory=lambda: [
-            ResearchProviderOptions(),
             ResearchProviderOptions(
-                name="GitHub code and list search",
-                kind="github_code",
-                enabled=False,
-                base_url="https://api.github.com",
-                min_interval_sec=6.5,
+                name="AdGuard service catalog",
+                kind="adguard_services",
+                enabled=True,
+                base_url=("https://adguardteam.github.io/HostlistsRegistry/assets/services.json"),
+                refresh_interval_hours=24,
             ),
             ResearchProviderOptions(
-                name="Brave web search",
-                kind="brave_search",
+                name="Local DNS records",
+                kind="dns_records",
+                enabled=True,
+                min_interval_sec=0.0,
+                refresh_interval_hours=6,
+            ),
+            ResearchProviderOptions(
+                name="Disconnect tracker catalog",
+                kind="disconnect_tracking",
                 enabled=False,
-                base_url="https://api.search.brave.com/res/v1/web/search",
+                base_url=(
+                    "https://raw.githubusercontent.com/disconnectme/"
+                    "disconnect-tracking-protection/master/services.json"
+                ),
+                refresh_interval_hours=24,
+            ),
+            ResearchProviderOptions(
+                name="RDAP registration data",
+                kind="rdap",
+                enabled=False,
+                base_url="https://data.iana.org/rdap/dns.json",
+                refresh_interval_hours=168,
+            ),
+            ResearchProviderOptions(
+                name="RIPEstat network information",
+                kind="ripestat",
+                enabled=False,
+                base_url="https://stat.ripe.net/data",
+                refresh_interval_hours=24,
+            ),
+            ResearchProviderOptions(
+                name="Netcraft Site Report",
+                kind="netcraft",
+                enabled=False,
+                base_url="https://sitereport.netcraft.com/",
+                min_interval_sec=10.0,
+                refresh_interval_hours=168,
             ),
             ResearchProviderOptions(
                 name="VirusTotal domain report",
@@ -247,6 +481,39 @@ class Options:
                 enabled=False,
                 base_url="https://www.virustotal.com/api/v3",
                 min_interval_sec=15.5,
+                refresh_interval_hours=24,
+            ),
+            ResearchProviderOptions(
+                name="ThreatFox IOC lookup",
+                kind="threatfox",
+                enabled=False,
+                base_url="https://threatfox-api.abuse.ch/api/v1/",
+                min_interval_sec=2.0,
+                refresh_interval_hours=6,
+            ),
+            ResearchProviderOptions(
+                name="PhishTank verified phishing database",
+                kind="phishtank",
+                enabled=False,
+                base_url=("https://data.phishtank.com/data/{api_key}/online-valid.json.bz2"),
+                refresh_interval_hours=1,
+            ),
+            ResearchProviderOptions(
+                name="urlscan.io archived scans",
+                kind="urlscan",
+                enabled=False,
+                base_url="https://urlscan.io/api/v1",
+                min_interval_sec=2.0,
+                refresh_interval_hours=12,
+                max_results=3,
+            ),
+            ResearchProviderOptions(
+                name="Cloudflare Radar domain ranking",
+                kind="cloudflare_radar",
+                enabled=False,
+                base_url="https://api.cloudflare.com/client/v4/radar",
+                min_interval_sec=1.0,
+                refresh_interval_hours=168,
             ),
         ]
     )
@@ -272,7 +539,7 @@ def _coerce_dataclass(cls: type[T], raw: Any) -> T:
     instance = cls()
     if not isinstance(raw, dict):
         return instance
-    valid_fields = {item.name for item in fields(instance)}
+    valid_fields = {item.name for item in fields(cast(Any, instance))}
     for key, value in raw.items():
         if key in valid_fields:
             setattr(instance, key, value)
@@ -286,27 +553,39 @@ def _load_list(raw: Any, cls: type[T], fallback: list[T]) -> list[T]:
     return loaded or fallback
 
 
+def _mapping(raw: Any) -> dict[str, Any]:
+    return dict(raw) if isinstance(raw, dict) else {}
+
+
 def _migrate(raw: dict[str, Any]) -> dict[str, Any]:
     data = dict(raw)
-    pihole = dict(data.get("pihole") or {})
+    try:
+        source_version = int(data.get("schema_version") or 0)
+    except (TypeError, ValueError):
+        source_version = 0
+    if source_version > CURRENT_SCHEMA_VERSION:
+        raise UnsupportedConfigVersionError(
+            "The configuration was created by a newer Pi-hole Manager version "
+            f"(schema {source_version}; supported up to {CURRENT_SCHEMA_VERSION})."
+        )
+    data.pop("locks", None)
+    pihole = _mapping(data.get("pihole"))
     pihole["base_url"] = pihole.get("base_url") or pihole.get("host") or "http://pi.hole"
     pihole["password"] = pihole.get("password") or pihole.get("app_password") or ""
     data["pihole"] = pihole
 
-    logging_raw = dict(data.get("logging") or {})
-    logging_raw["enabled"] = logging_raw.get(
-        "enabled", logging_raw.get("to_file", True)
-    )
+    logging_raw = _mapping(data.get("logging"))
+    logging_raw["enabled"] = logging_raw.get("enabled", logging_raw.get("to_file", True))
     logging_raw["filename"] = (
         logging_raw.get("filename") or logging_raw.get("file") or "pihole_manager.log"
     )
     data["logging"] = logging_raw
 
-    scans = dict(data.get("scans") or {})
+    scans = _mapping(data.get("scans"))
     scans["batch_size"] = scans.get("batch_size", scans.get("batch", 200))
     data["scans"] = scans
 
-    llm = dict(data.get("llm") or {})
+    llm = _mapping(data.get("llm"))
     if "profile_active_index" in llm and "active_profile_index" not in llm:
         llm["active_profile_index"] = llm["profile_active_index"]
     llm["worker_batch_size"] = llm.get(
@@ -318,7 +597,136 @@ def _migrate(raw: dict[str, Any]) -> dict[str, Any]:
     legacy_policies = llm.get("tag_policies") or llm.get("category_policies")
     if legacy_policies:
         llm["tag_policies"] = legacy_policies
+    llm.setdefault("tag_recheck_days", dict(_DEFAULT_TAG_RECHECK_DAYS))
     data["llm"] = llm
+
+    ui = _mapping(data.get("ui"))
+    if "table_column_widths" not in ui and "queries_colwidths" in ui:
+        ui["table_column_widths"] = {
+            **UIOptions().table_column_widths,
+            "queries": _mapping(ui.get("queries_colwidths")),
+        }
+    ui.setdefault("show_tooltips", True)
+    visible_columns = _mapping(ui.get("table_visible_columns"))
+    review_visible = list(visible_columns.get("review") or [])
+    if review_visible:
+        for column, position in (("order", 1), ("queued", 2)):
+            if column not in review_visible:
+                review_visible.insert(min(position, len(review_visible)), column)
+        visible_columns["review"] = review_visible
+        ui["table_visible_columns"] = visible_columns
+    column_order = _mapping(ui.get("table_column_order"))
+    review_order = list(column_order.get("review") or [])
+    if review_order:
+        for column, position in (("order", 1), ("queued", 2)):
+            if column not in review_order:
+                review_order.insert(min(position, len(review_order)), column)
+        column_order["review"] = review_order
+        ui["table_column_order"] = column_order
+    data["ui"] = ui
+
+    updates_raw = _mapping(data.get("updates"))
+    updates_raw.setdefault("check_automatically", False)
+    if "channel" not in updates_raw:
+        updates_raw["channel"] = (
+            "prerelease" if updates_raw.get("include_prereleases") else "stable"
+        )
+    updates_raw.pop("include_prereleases", None)
+    updates_raw.setdefault("check_interval_hours", 24)
+    updates_raw.setdefault("last_check_at", 0)
+    data["updates"] = updates_raw
+
+    research_raw = _mapping(data.get("research"))
+    legacy_research_enabled = research_raw.get("enabled")
+    research_raw.pop("enabled", None)
+    research_raw.pop("run_before_llm", None)
+    data["research"] = research_raw
+
+    profiles = []
+    known_default_systems = {
+        (
+            "You classify DNS domains for a Pi-hole v6 administrator. "
+            "Use the supplied evidence, distinguish facts from inference, and prefer "
+            "manual review when evidence is weak or blocking may break an important service."
+        ),
+        (
+            "You classify DNS domains for a Pi-hole v6 administrator. Start with the "
+            "supplied domain dossier and distinguish verified facts from inference. If the "
+            "selected model and API perform live web search without an additional tool request, "
+            "independently verify "
+            "the exact domain using official vendor documentation, GitHub code, issues and "
+            "discussions, Pi-hole community reports, reputable blocklist repositories, and "
+            "credible user reports. Never claim to have searched the web when browsing is not "
+            "available. Include useful source URLs in details when known, and prefer manual "
+            "review when evidence is weak or blocking may break an important service."
+        ),
+    }
+    new_default_system = PromptProfileOptions().system
+    for raw_profile in data.get("prompt_profiles") or []:
+        if not isinstance(raw_profile, dict):
+            continue
+        profile = dict(raw_profile)
+        if (
+            str(profile.get("name") or "").strip().lower() == "balanced"
+            and str(profile.get("system") or "").strip() in known_default_systems
+        ):
+            profile["system"] = new_default_system
+        profiles.append(profile)
+    if profiles:
+        data["prompt_profiles"] = profiles
+
+    research_providers = []
+    supported_research_kinds = {
+        "adguard_services",
+        "dns_records",
+        "disconnect_tracking",
+        "rdap",
+        "ripestat",
+        "netcraft",
+        "virustotal",
+        "threatfox",
+        "phishtank",
+        "urlscan",
+        "cloudflare_radar",
+    }
+    for raw_provider in data.get("research_providers") or []:
+        if not isinstance(raw_provider, dict):
+            continue
+        provider = dict(raw_provider)
+        provider_kind = str(provider.get("kind") or "").strip().lower()
+        if provider_kind not in supported_research_kinds:
+            continue
+        provider["kind"] = provider_kind
+        if legacy_research_enabled is False:
+            provider["enabled"] = False
+        research_providers.append(provider)
+    configured_kinds = {str(item.get("kind") or "") for item in research_providers}
+    for default_provider in Options().research_providers:
+        if default_provider.kind not in configured_kinds:
+            research_providers.append(asdict(default_provider))
+    data["research_providers"] = research_providers
+
+    providers = []
+    for raw_provider in data.get("llm_providers") or []:
+        if not isinstance(raw_provider, dict):
+            continue
+        provider = dict(raw_provider)
+        provider.setdefault("preset_id", "custom")
+        provider.setdefault("api_style", "openai_compatible")
+        provider.setdefault("max_output_tokens", 4096)
+        provider.setdefault("max_tokens_parameter", "max_tokens")
+        provider.setdefault("send_temperature", True)
+        base_url = str(provider.get("base_url") or "").strip().rstrip("/")
+        if (
+            base_url
+            and "api_style" not in raw_provider
+            and not base_url.endswith(("/v1", "/openai", "/chat/completions"))
+        ):
+            provider["base_url"] = base_url + "/v1"
+        providers.append(provider)
+    if providers:
+        data["llm_providers"] = providers
+
     data["schema_version"] = CURRENT_SCHEMA_VERSION
     return data
 
@@ -328,50 +736,193 @@ def _normalize_tags(values: Any) -> list[str]:
         return []
     return list(
         dict.fromkeys(
-            str(value).strip().lower().replace(" ", "_")
-            for value in values
-            if str(value).strip()
+            str(value).strip().lower().replace(" ", "_") for value in values if str(value).strip()
         )
     )
 
 
+def _as_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _as_float(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _as_bool(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "yes", "on", "1"}:
+            return True
+        if normalized in {"false", "no", "off", "0"}:
+            return False
+    return default
+
+
 def _validate(options: Options) -> Options:
+    defaults = Options()
     options.schema_version = CURRENT_SCHEMA_VERSION
-    options.logging.level = options.logging.level.upper()
+    options.logging.enabled = _as_bool(options.logging.enabled, defaults.logging.enabled)
+    options.logging.level = str(options.logging.level).upper()
     if options.logging.level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
         options.logging.level = "INFO"
-    options.logging.rotate_bytes = max(100_000, int(options.logging.rotate_bytes))
-    options.logging.backup_count = max(1, int(options.logging.backup_count))
+    options.logging.filename = str(options.logging.filename or defaults.logging.filename)
+    options.logging.rotate_bytes = max(
+        100_000,
+        _as_int(options.logging.rotate_bytes, defaults.logging.rotate_bytes),
+    )
+    options.logging.backup_count = max(
+        1,
+        _as_int(options.logging.backup_count, defaults.logging.backup_count),
+    )
 
-    options.scans.interval_sec = max(1, int(options.scans.interval_sec))
-    options.scans.batch_size = max(1, int(options.scans.batch_size))
-    options.scans.initial_lookback_sec = max(1, int(options.scans.initial_lookback_sec))
-    options.scans.queue_trigger_size = max(1, int(options.scans.queue_trigger_size))
-    options.scans.max_queue_wait_sec = max(1, int(options.scans.max_queue_wait_sec))
+    options.notify.enable_desktop = _as_bool(
+        options.notify.enable_desktop,
+        defaults.notify.enable_desktop,
+    )
+    options.notify.enable_sound = _as_bool(
+        options.notify.enable_sound,
+        defaults.notify.enable_sound,
+    )
+    options.notify.rate_limit_sec = max(
+        0,
+        _as_int(options.notify.rate_limit_sec, defaults.notify.rate_limit_sec),
+    )
+    options.notify.toast_title = str(options.notify.toast_title or defaults.notify.toast_title)
 
-    options.pihole.timeout_sec = max(1.0, float(options.pihole.timeout_sec))
+    options.scans.enabled = _as_bool(options.scans.enabled, defaults.scans.enabled)
+    options.scans.interval_sec = max(
+        1, _as_int(options.scans.interval_sec, defaults.scans.interval_sec)
+    )
+    options.scans.batch_size = max(1, _as_int(options.scans.batch_size, defaults.scans.batch_size))
+    options.scans.initial_lookback_sec = max(
+        1,
+        _as_int(
+            options.scans.initial_lookback_sec,
+            defaults.scans.initial_lookback_sec,
+        ),
+    )
+    options.scans.queue_trigger_size = max(
+        1,
+        _as_int(options.scans.queue_trigger_size, defaults.scans.queue_trigger_size),
+    )
+    options.scans.max_queue_wait_sec = max(
+        1,
+        _as_int(options.scans.max_queue_wait_sec, defaults.scans.max_queue_wait_sec),
+    )
+    options.scans.history_backfill_enabled = _as_bool(
+        options.scans.history_backfill_enabled,
+        defaults.scans.history_backfill_enabled,
+    )
+    options.scans.history_idle_after_sec = max(
+        30,
+        _as_int(
+            options.scans.history_idle_after_sec,
+            defaults.scans.history_idle_after_sec,
+        ),
+    )
+    options.scans.history_lookback_days = max(
+        1,
+        _as_int(
+            options.scans.history_lookback_days,
+            defaults.scans.history_lookback_days,
+        ),
+    )
+    options.scans.history_batch_size = max(
+        10,
+        _as_int(options.scans.history_batch_size, defaults.scans.history_batch_size),
+    )
 
-    options.llm.interval_sec = max(1, int(options.llm.interval_sec))
-    options.llm.worker_batch_size = max(1, int(options.llm.worker_batch_size))
+    options.pihole.base_url = str(options.pihole.base_url or defaults.pihole.base_url)
+    options.pihole.password = str(options.pihole.password or "")
+    options.pihole.verify_tls = _as_bool(
+        options.pihole.verify_tls,
+        defaults.pihole.verify_tls,
+    )
+    options.pihole.timeout_sec = max(
+        1.0,
+        _as_float(options.pihole.timeout_sec, defaults.pihole.timeout_sec),
+    )
+
+    options.llm.enabled = _as_bool(options.llm.enabled, defaults.llm.enabled)
+    options.llm.interval_sec = max(1, _as_int(options.llm.interval_sec, defaults.llm.interval_sec))
+    options.llm.worker_batch_size = max(
+        1,
+        _as_int(options.llm.worker_batch_size, defaults.llm.worker_batch_size),
+    )
     options.llm.domains_per_request = min(
-        options.llm.worker_batch_size, max(1, int(options.llm.domains_per_request))
+        options.llm.worker_batch_size,
+        max(
+            1,
+            _as_int(
+                options.llm.domains_per_request,
+                defaults.llm.domains_per_request,
+            ),
+        ),
     )
     options.llm.min_request_interval_sec = max(
-        0.0, float(options.llm.min_request_interval_sec)
+        0.0,
+        _as_float(
+            options.llm.min_request_interval_sec,
+            defaults.llm.min_request_interval_sec,
+        ),
     )
-    options.llm.max_retries = max(0, int(options.llm.max_retries))
-    options.llm.default_recheck_days = max(1, int(options.llm.default_recheck_days))
+    options.llm.max_retries = max(0, _as_int(options.llm.max_retries, defaults.llm.max_retries))
+    options.llm.default_recheck_days = max(
+        1,
+        _as_int(
+            options.llm.default_recheck_days,
+            defaults.llm.default_recheck_days,
+        ),
+    )
     options.llm.review_confidence_threshold = min(
-        1.0, max(0.0, float(options.llm.review_confidence_threshold))
+        1.0,
+        max(
+            0.0,
+            _as_float(
+                options.llm.review_confidence_threshold,
+                defaults.llm.review_confidence_threshold,
+            ),
+        ),
     )
     options.llm.auto_action_min_confidence = min(
-        1.0, max(0.0, float(options.llm.auto_action_min_confidence))
+        1.0,
+        max(
+            0.0,
+            _as_float(
+                options.llm.auto_action_min_confidence,
+                defaults.llm.auto_action_min_confidence,
+            ),
+        ),
     )
+    if options.llm.review_confidence_threshold > options.llm.auto_action_min_confidence:
+        options.llm.review_confidence_threshold = options.llm.auto_action_min_confidence
+    options.llm.simulation_mode = _as_bool(
+        options.llm.simulation_mode,
+        defaults.llm.simulation_mode,
+    )
+    options.llm.require_research_for_auto_action = _as_bool(
+        options.llm.require_research_for_auto_action,
+        defaults.llm.require_research_for_auto_action,
+    )
+    options.llm.automation_mode = str(options.llm.automation_mode)
     valid_modes = {item.value for item in AutomationMode}
     if options.llm.automation_mode not in valid_modes:
         options.llm.automation_mode = AutomationMode.HYBRID.value
 
     options.llm.tags = _normalize_tags(options.llm.tags) or ["unknown"]
+    if not isinstance(options.llm.tag_policies, dict):
+        options.llm.tag_policies = {}
     options.llm.tag_policies = {
         str(key).strip().lower().replace(" ", "_"): str(value).strip().lower()
         for key, value in options.llm.tag_policies.items()
@@ -379,44 +930,242 @@ def _validate(options: Options) -> Options:
     }
     for tag in options.llm.tags:
         options.llm.tag_policies.setdefault(tag, Policy.MANUAL_REVIEW.value)
+    if not isinstance(options.llm.tag_recheck_days, dict):
+        options.llm.tag_recheck_days = {}
+    normalized_rechecks: dict[str, int] = {}
+    for key, value in options.llm.tag_recheck_days.items():
+        normalized_key = str(key).strip().lower().replace(" ", "_")
+        if not normalized_key:
+            continue
+        try:
+            normalized_rechecks[normalized_key] = max(1, int(value))
+        except (TypeError, ValueError):
+            continue
+    options.llm.tag_recheck_days = normalized_rechecks
+    for tag in options.llm.tags:
+        options.llm.tag_recheck_days.setdefault(
+            tag, _DEFAULT_TAG_RECHECK_DAYS.get(tag, options.llm.default_recheck_days)
+        )
 
-    options.research.max_age_days = max(1, int(options.research.max_age_days))
-    options.research.timeout_sec = max(1.0, float(options.research.timeout_sec))
-    options.research.max_results_per_provider = max(
-        1, int(options.research.max_results_per_provider)
+    options.research.max_age_days = max(
+        1,
+        _as_int(options.research.max_age_days, defaults.research.max_age_days),
     )
-    options.locks.reconcile_interval_sec = max(
-        5, int(options.locks.reconcile_interval_sec)
+    options.updates.check_automatically = _as_bool(
+        options.updates.check_automatically,
+        defaults.updates.check_automatically,
+    )
+    channel = str(options.updates.channel).strip().lower()
+    options.updates.channel = (
+        "prerelease"
+        if channel == "development"
+        else channel
+        if channel in {"stable", "prerelease"}
+        else "stable"
+    )
+    options.updates.check_interval_hours = max(
+        1,
+        _as_int(
+            options.updates.check_interval_hours,
+            defaults.updates.check_interval_hours,
+        ),
+    )
+    options.updates.last_check_at = max(
+        0,
+        _as_int(options.updates.last_check_at, defaults.updates.last_check_at),
     )
 
-    options.ui.query_refresh_ms = max(500, int(options.ui.query_refresh_ms))
-    options.ui.window_width = max(800, int(options.ui.window_width))
-    options.ui.window_height = max(600, int(options.ui.window_height))
+    if not isinstance(options.scans.excluded_domain_suffixes, list):
+        options.scans.excluded_domain_suffixes = [".arpa"]
+    normalized_suffixes: list[str] = []
+    for suffix_value in options.scans.excluded_domain_suffixes:
+        suffix = str(suffix_value).strip().lower().rstrip(".")
+        if suffix.startswith("*"):
+            suffix = suffix[1:]
+        if suffix and not suffix.startswith("."):
+            suffix = "." + suffix
+        if suffix and suffix not in normalized_suffixes:
+            normalized_suffixes.append(suffix)
+    options.scans.excluded_domain_suffixes = normalized_suffixes
+
+    theme = str(options.ui.theme).strip().lower()
+    options.ui.theme = theme if theme in {"system", "light", "dark"} else defaults.ui.theme
+    options.ui.show_tooltips = _as_bool(
+        options.ui.show_tooltips,
+        defaults.ui.show_tooltips,
+    )
+    options.ui.evidence_test_skip_api_key_sources = _as_bool(
+        options.ui.evidence_test_skip_api_key_sources,
+        defaults.ui.evidence_test_skip_api_key_sources,
+    )
+    options.ui.evidence_test_skip_missing_api_keys = _as_bool(
+        options.ui.evidence_test_skip_missing_api_keys,
+        defaults.ui.evidence_test_skip_missing_api_keys,
+    )
+    options.ui.lists_queue_only_unreviewed = _as_bool(
+        options.ui.lists_queue_only_unreviewed,
+        defaults.ui.lists_queue_only_unreviewed,
+    )
+    options.ui.auto_update_queries = _as_bool(
+        options.ui.auto_update_queries,
+        defaults.ui.auto_update_queries,
+    )
+    options.ui.auto_scroll_queries = _as_bool(
+        options.ui.auto_scroll_queries,
+        defaults.ui.auto_scroll_queries,
+    )
+    options.ui.history_deduplicate_domains = _as_bool(
+        options.ui.history_deduplicate_domains,
+        defaults.ui.history_deduplicate_domains,
+    )
+    options.ui.query_refresh_ms = max(
+        500,
+        _as_int(options.ui.query_refresh_ms, defaults.ui.query_refresh_ms),
+    )
+    options.ui.window_width = max(
+        800,
+        _as_int(options.ui.window_width, defaults.ui.window_width),
+    )
+    options.ui.window_height = max(
+        600,
+        _as_int(options.ui.window_height, defaults.ui.window_height),
+    )
+    ui_defaults = UIOptions()
+    if not isinstance(options.ui.table_visible_columns, dict):
+        options.ui.table_visible_columns = {}
+    if not isinstance(options.ui.table_column_widths, dict):
+        options.ui.table_column_widths = {}
+    for table_key, default_columns in ui_defaults.table_visible_columns.items():
+        configured = options.ui.table_visible_columns.get(table_key, default_columns)
+        if not isinstance(configured, list):
+            configured = default_columns
+        known_columns = set(ui_defaults.table_column_widths.get(table_key, {}))
+        options.ui.table_visible_columns[table_key] = [
+            str(column) for column in configured if str(column) in known_columns
+        ] or list(default_columns)
+
+        configured_widths = options.ui.table_column_widths.get(table_key, {})
+        if not isinstance(configured_widths, dict):
+            configured_widths = {}
+        options.ui.table_column_widths[table_key] = {
+            column: max(20, _as_int(configured_widths.get(column), width))
+            for column, width in ui_defaults.table_column_widths.get(table_key, {}).items()
+        }
+    if not isinstance(options.ui.table_column_order, dict):
+        options.ui.table_column_order = {}
+    for table_key, default_order in ui_defaults.table_column_order.items():
+        configured_order = options.ui.table_column_order.get(table_key, default_order)
+        if not isinstance(configured_order, list):
+            configured_order = default_order
+        known_columns = set(default_order)
+        normalized_order = list(
+            dict.fromkeys(
+                str(column) for column in configured_order if str(column) in known_columns
+            )
+        )
+        options.ui.table_column_order[table_key] = [
+            *normalized_order,
+            *(column for column in default_order if column not in normalized_order),
+        ]
+    options.ui.queries_colwidths = dict(options.ui.table_column_widths["queries"])
 
     options.llm_providers = options.llm_providers or [LLMProviderOptions()]
-    for provider in options.llm_providers:
-        provider.timeout_sec = max(1.0, float(provider.timeout_sec))
-        if provider.structured_output not in {
+    for llm_provider in options.llm_providers:
+        llm_provider.name = str(llm_provider.name or "Unnamed provider")
+        llm_provider.preset_id = str(llm_provider.preset_id).strip().lower() or "custom"
+        llm_provider.api_style = str(llm_provider.api_style).strip().lower()
+        if llm_provider.api_style not in {"openai_compatible", "anthropic_messages"}:
+            llm_provider.api_style = "openai_compatible"
+        llm_provider.base_url = str(llm_provider.base_url or "").strip().rstrip("/")
+        llm_provider.api_key = str(llm_provider.api_key or "").strip()
+        llm_provider.model = str(llm_provider.model or "").strip()
+        llm_provider.temperature = _as_float(llm_provider.temperature, 0.0)
+        llm_provider.timeout_sec = max(1.0, _as_float(llm_provider.timeout_sec, 30.0))
+        llm_provider.max_output_tokens = max(
+            1,
+            _as_int(llm_provider.max_output_tokens, 4096),
+        )
+        llm_provider.max_tokens_parameter = str(llm_provider.max_tokens_parameter).strip().lower()
+        if llm_provider.max_tokens_parameter not in {
+            "max_tokens",
+            "max_completion_tokens",
+            "none",
+        }:
+            llm_provider.max_tokens_parameter = "max_tokens"
+        llm_provider.send_temperature = _as_bool(llm_provider.send_temperature, True)
+        llm_provider.structured_output = str(llm_provider.structured_output).strip().lower()
+        if llm_provider.api_style == "anthropic_messages":
+            llm_provider.structured_output = "prompt_only"
+        if llm_provider.structured_output not in {
             "auto",
             "json_schema",
             "json_object",
             "prompt_only",
         }:
-            provider.structured_output = "auto"
+            llm_provider.structured_output = "auto"
 
     options.prompt_profiles = options.prompt_profiles or [PromptProfileOptions()]
-    options.research_providers = options.research_providers or [ResearchProviderOptions()]
-    for provider in options.research_providers:
-        provider.kind = provider.kind.strip().lower()
-        provider.timeout_sec = max(1.0, float(provider.timeout_sec))
-        provider.min_interval_sec = max(0.0, float(provider.min_interval_sec))
-        provider.max_results = max(1, int(provider.max_results))
+    for profile in options.prompt_profiles:
+        profile.name = str(profile.name or "Unnamed profile")
+        profile.system = str(profile.system or "")
+        profile.user_template = str(profile.user_template or "")
+    supported_research_kinds = {
+        "adguard_services",
+        "dns_records",
+        "disconnect_tracking",
+        "rdap",
+        "ripestat",
+        "netcraft",
+        "virustotal",
+        "threatfox",
+        "phishtank",
+        "urlscan",
+        "cloudflare_radar",
+    }
+    options.research_providers = [
+        provider
+        for provider in options.research_providers
+        if str(provider.kind).strip().lower() in supported_research_kinds
+    ]
+    configured_kinds = {
+        str(provider.kind).strip().lower() for provider in options.research_providers
+    }
+    for default_provider in Options().research_providers:
+        if default_provider.kind not in configured_kinds:
+            options.research_providers.append(default_provider)
+    for research_provider in options.research_providers:
+        research_provider.name = str(research_provider.name or "Unnamed source")
+        research_provider.kind = str(research_provider.kind).strip().lower()
+        research_provider.enabled = _as_bool(research_provider.enabled, False)
+        research_provider.base_url = str(research_provider.base_url or "").strip()
+        research_provider.api_key = str(research_provider.api_key or "").strip()
+        research_provider.test_domain = str(research_provider.test_domain or "").strip().lower()
+        if research_provider.kind == "rdap" and not research_provider.base_url.strip():
+            research_provider.base_url = "https://data.iana.org/rdap/dns.json"
+        research_provider.timeout_sec = max(
+            1.0,
+            _as_float(research_provider.timeout_sec, 15.0),
+        )
+        research_provider.min_interval_sec = max(
+            0.0,
+            _as_float(research_provider.min_interval_sec, 1.0),
+        )
+        research_provider.refresh_interval_hours = max(
+            1,
+            _as_int(research_provider.refresh_interval_hours, 24),
+        )
+        research_provider.max_results = max(
+            1,
+            _as_int(research_provider.max_results, 5),
+        )
 
     options.llm.active_provider_index = min(
-        max(0, int(options.llm.active_provider_index)), len(options.llm_providers) - 1
+        max(0, _as_int(options.llm.active_provider_index, 0)),
+        len(options.llm_providers) - 1,
     )
     options.llm.active_profile_index = min(
-        max(0, int(options.llm.active_profile_index)), len(options.prompt_profiles) - 1
+        max(0, _as_int(options.llm.active_profile_index, 0)),
+        len(options.prompt_profiles) - 1,
     )
     return options
 
@@ -435,30 +1184,38 @@ def load_options() -> Options:
 
         if not isinstance(raw, dict):
             return _validate(Options())
-        raw = _migrate(raw)
-        options = Options(
-            schema_version=int(raw.get("schema_version", CURRENT_SCHEMA_VERSION)),
-            logging=_coerce_dataclass(LoggingOptions, raw.get("logging")),
-            notify=_coerce_dataclass(NotifyOptions, raw.get("notify")),
-            scans=_coerce_dataclass(ScanOptions, raw.get("scans")),
-            pihole=_coerce_dataclass(PiHoleOptions, raw.get("pihole")),
-            llm=_coerce_dataclass(LLMOptions, raw.get("llm")),
-            research=_coerce_dataclass(ResearchOptions, raw.get("research")),
-            locks=_coerce_dataclass(LockOptions, raw.get("locks")),
-            llm_providers=_load_list(
-                raw.get("llm_providers"), LLMProviderOptions, [LLMProviderOptions()]
-            ),
-            prompt_profiles=_load_list(
-                raw.get("prompt_profiles"), PromptProfileOptions, [PromptProfileOptions()]
-            ),
-            research_providers=_load_list(
-                raw.get("research_providers"),
-                ResearchProviderOptions,
-                Options().research_providers,
-            ),
-            ui=_coerce_dataclass(UIOptions, raw.get("ui")),
-        )
-        return _validate(options)
+        try:
+            raw = _migrate(raw)
+            options = Options(
+                schema_version=int(raw.get("schema_version", CURRENT_SCHEMA_VERSION)),
+                logging=_coerce_dataclass(LoggingOptions, raw.get("logging")),
+                notify=_coerce_dataclass(NotifyOptions, raw.get("notify")),
+                scans=_coerce_dataclass(ScanOptions, raw.get("scans")),
+                pihole=_coerce_dataclass(PiHoleOptions, raw.get("pihole")),
+                llm=_coerce_dataclass(LLMOptions, raw.get("llm")),
+                research=_coerce_dataclass(ResearchOptions, raw.get("research")),
+                updates=_coerce_dataclass(UpdateOptions, raw.get("updates")),
+                llm_providers=_load_list(
+                    raw.get("llm_providers"), LLMProviderOptions, [LLMProviderOptions()]
+                ),
+                prompt_profiles=_load_list(
+                    raw.get("prompt_profiles"),
+                    PromptProfileOptions,
+                    [PromptProfileOptions()],
+                ),
+                research_providers=_load_list(
+                    raw.get("research_providers"),
+                    ResearchProviderOptions,
+                    Options().research_providers,
+                ),
+                ui=_coerce_dataclass(UIOptions, raw.get("ui")),
+            )
+            return _validate(options)
+        except UnsupportedConfigVersionError:
+            raise
+        except (AttributeError, TypeError, ValueError) as exc:
+            log.warning("Invalid configuration; using safe defaults: %s", exc)
+            return _validate(Options())
 
 
 def save_options(options: Options) -> None:
@@ -469,9 +1226,16 @@ def save_options(options: Options) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(asdict(options), indent=2, ensure_ascii=False) + "\n"
     with _CONFIG_LOCK:
-        with tempfile.NamedTemporaryFile(
-            "w", encoding="utf-8", dir=path.parent, delete=False
-        ) as handle:
-            handle.write(payload)
-            temp_name = handle.name
-        os.replace(temp_name, path)
+        temp_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                "w", encoding="utf-8", dir=path.parent, delete=False
+            ) as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+                temp_path = Path(handle.name)
+            os.replace(temp_path, path)
+        finally:
+            if temp_path is not None:
+                temp_path.unlink(missing_ok=True)

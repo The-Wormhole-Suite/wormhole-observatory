@@ -9,14 +9,15 @@ from pihole_manager import __version__
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Pi-hole Manager for Pi-hole v6+")
     parser.add_argument("--version", action="version", version=__version__)
+    parser.add_argument("--post-update-marker", default="", help=argparse.SUPPRESS)
     return parser.parse_args(argv)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    _parse_args(argv)
+    args = _parse_args(argv)
     from pihole_manager.gui.app import run_app
 
-    run_app()
+    run_app(post_update_marker=args.post_update_marker)
     return 0
 
 

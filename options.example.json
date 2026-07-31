@@ -1,5 +1,5 @@
 {
-  "schema_version": 3,
+  "schema_version": 16,
   "logging": {
     "enabled": true,
     "level": "INFO",
@@ -19,7 +19,14 @@
     "batch_size": 200,
     "initial_lookback_sec": 300,
     "queue_trigger_size": 20,
-    "max_queue_wait_sec": 300
+    "max_queue_wait_sec": 300,
+    "history_backfill_enabled": false,
+    "history_idle_after_sec": 300,
+    "history_lookback_days": 30,
+    "history_batch_size": 500,
+    "excluded_domain_suffixes": [
+      ".arpa"
+    ]
   },
   "pihole": {
     "base_url": "http://pi.hole",
@@ -37,9 +44,11 @@
     "active_provider_index": 0,
     "active_profile_index": 0,
     "automation_mode": "hybrid",
+    "simulation_mode": true,
     "default_recheck_days": 30,
     "review_confidence_threshold": 0.75,
     "auto_action_min_confidence": 0.95,
+    "require_research_for_auto_action": true,
     "tags": [
       "advertising",
       "cross_site_tracking",
@@ -79,67 +88,132 @@
       "phishing": "deny",
       "command_and_control": "deny",
       "unknown": "manual_review"
+    },
+    "tag_recheck_days": {
+      "advertising": 30,
+      "cross_site_tracking": 30,
+      "analytics": 30,
+      "telemetry": 30,
+      "crash_reporting": 30,
+      "authentication": 90,
+      "payments": 90,
+      "api_backend": 60,
+      "content_media": 60,
+      "cdn_shared_infrastructure": 90,
+      "software_updates": 60,
+      "notifications_messaging": 60,
+      "security_antifraud": 60,
+      "iot_cloud": 45,
+      "malware": 7,
+      "phishing": 7,
+      "command_and_control": 7,
+      "unknown": 3
     }
   },
   "research": {
-    "enabled": false,
-    "run_before_llm": true,
-    "max_age_days": 30,
-    "timeout_sec": 15.0,
-    "max_results_per_provider": 5
+    "max_age_days": 30
   },
-  "locks": {
-    "enabled": true,
-    "reconcile_interval_sec": 60
+  "updates": {
+    "check_automatically": false,
+    "channel": "stable",
+    "check_interval_hours": 24,
+    "last_check_at": 0
   },
   "llm_providers": [
     {
-      "name": "Local or OpenAI-compatible",
+      "name": "Custom OpenAI-compatible",
+      "preset_id": "custom",
+      "api_style": "openai_compatible",
       "base_url": "",
       "api_key": "",
       "model": "",
       "temperature": 0.0,
       "timeout_sec": 30.0,
+      "max_output_tokens": 4096,
+      "max_tokens_parameter": "max_tokens",
+      "send_temperature": true,
       "structured_output": "auto"
     }
   ],
   "prompt_profiles": [
     {
       "name": "Balanced",
-      "system": "You classify DNS domains for a Pi-hole v6 administrator. Use the supplied evidence, distinguish facts from inference, and prefer manual review when evidence is weak or blocking may break an important service.",
+      "system": "You classify DNS domains for a Pi-hole v6 administrator. Start with the supplied domain dossier and distinguish verified facts from inference. If the selected model and API perform live web search without an additional tool request, independently verify the exact domain using official vendor documentation, GitHub code, issues and discussions, Pi-hole community reports, reputable blocklist repositories such as AdGuardTeam/HostlistsRegistry, hagezi/dns-blocklists, easylist/easylist, disconnectme/disconnect-tracking-protection, and credible user reports. Pi-hole Manager does not currently invoke provider-specific web-search tools. Never claim to have searched the web when browsing is not available. Include useful source URLs in details when known, and prefer manual review when evidence is weak or blocking may break an important service.",
       "user_template": "Analyse the following domain dossiers. Return only the required structured result.\n{domain_dossiers}"
     }
   ],
   "research_providers": [
     {
-      "name": "RDAP registration data",
-      "kind": "rdap",
+      "name": "AdGuard service catalog",
+      "kind": "adguard_services",
+      "enabled": true,
+      "base_url": "https://adguardteam.github.io/HostlistsRegistry/assets/services.json",
+      "api_key": "",
+      "timeout_sec": 15.0,
+      "min_interval_sec": 1.0,
+      "refresh_interval_hours": 24,
+      "max_results": 5,
+      "test_domain": ""
+    },
+    {
+      "name": "Local DNS records",
+      "kind": "dns_records",
       "enabled": true,
       "base_url": "",
       "api_key": "",
       "timeout_sec": 15.0,
-      "min_interval_sec": 1.0,
-      "max_results": 5
+      "min_interval_sec": 0.0,
+      "refresh_interval_hours": 6,
+      "max_results": 5,
+      "test_domain": ""
     },
     {
-      "name": "GitHub code and list search",
-      "kind": "github_code",
+      "name": "Disconnect tracker catalog",
+      "kind": "disconnect_tracking",
       "enabled": false,
-      "base_url": "https://api.github.com",
-      "api_key": "",
-      "timeout_sec": 15.0,
-      "min_interval_sec": 6.5,
-      "max_results": 5
-    },
-    {
-      "name": "Brave web search",
-      "kind": "brave_search",
-      "enabled": false,
-      "base_url": "https://api.search.brave.com/res/v1/web/search",
+      "base_url": "https://raw.githubusercontent.com/disconnectme/disconnect-tracking-protection/master/services.json",
       "api_key": "",
       "timeout_sec": 15.0,
       "min_interval_sec": 1.0,
-      "max_results": 5
+      "refresh_interval_hours": 24,
+      "max_results": 5,
+      "test_domain": ""
+    },
+    {
+      "name": "RDAP registration data",
+      "kind": "rdap",
+      "enabled": false,
+      "base_url": "https://data.iana.org/rdap/dns.json",
+      "api_key": "",
+      "timeout_sec": 15.0,
+      "min_interval_sec": 1.0,
+      "refresh_interval_hours": 168,
+      "max_results": 5,
+      "test_domain": ""
+    },
+    {
+      "name": "RIPEstat network information",
+      "kind": "ripestat",
+      "enabled": false,
+      "base_url": "https://stat.ripe.net/data",
+      "api_key": "",
+      "timeout_sec": 15.0,
+      "min_interval_sec": 1.0,
+      "refresh_interval_hours": 24,
+      "max_results": 5,
+      "test_domain": ""
+    },
+    {
+      "name": "Netcraft Site Report",
+      "kind": "netcraft",
+      "enabled": false,
+      "base_url": "https://sitereport.netcraft.com/",
+      "api_key": "",
+      "timeout_sec": 15.0,
+      "min_interval_sec": 10.0,
+      "refresh_interval_hours": 168,
+      "max_results": 5,
+      "test_domain": ""
     },
     {
       "name": "VirusTotal domain report",
@@ -149,16 +223,71 @@
       "api_key": "",
       "timeout_sec": 15.0,
       "min_interval_sec": 15.5,
-      "max_results": 5
+      "refresh_interval_hours": 24,
+      "max_results": 5,
+      "test_domain": ""
+    },
+    {
+      "name": "ThreatFox IOC lookup",
+      "kind": "threatfox",
+      "enabled": false,
+      "base_url": "https://threatfox-api.abuse.ch/api/v1/",
+      "api_key": "",
+      "timeout_sec": 15.0,
+      "min_interval_sec": 2.0,
+      "refresh_interval_hours": 6,
+      "max_results": 5,
+      "test_domain": ""
+    },
+    {
+      "name": "PhishTank verified phishing database",
+      "kind": "phishtank",
+      "enabled": false,
+      "base_url": "https://data.phishtank.com/data/{api_key}/online-valid.json.bz2",
+      "api_key": "",
+      "timeout_sec": 15.0,
+      "min_interval_sec": 1.0,
+      "refresh_interval_hours": 1,
+      "max_results": 5,
+      "test_domain": ""
+    },
+    {
+      "name": "urlscan.io archived scans",
+      "kind": "urlscan",
+      "enabled": false,
+      "base_url": "https://urlscan.io/api/v1",
+      "api_key": "",
+      "timeout_sec": 15.0,
+      "min_interval_sec": 2.0,
+      "refresh_interval_hours": 12,
+      "max_results": 3,
+      "test_domain": ""
+    },
+    {
+      "name": "Cloudflare Radar domain ranking",
+      "kind": "cloudflare_radar",
+      "enabled": false,
+      "base_url": "https://api.cloudflare.com/client/v4/radar",
+      "api_key": "",
+      "timeout_sec": 15.0,
+      "min_interval_sec": 1.0,
+      "refresh_interval_hours": 168,
+      "max_results": 5,
+      "test_domain": ""
     }
   ],
   "ui": {
     "theme": "system",
+    "show_tooltips": true,
     "window_width": 1280,
     "window_height": 820,
-    "auto_update_queries": true,
+    "auto_update_queries": false,
     "query_refresh_ms": 2000,
     "auto_scroll_queries": true,
+    "history_deduplicate_domains": true,
+    "evidence_test_skip_api_key_sources": false,
+    "evidence_test_skip_missing_api_keys": true,
+    "lists_queue_only_unreviewed": true,
     "queries_colwidths": {
       "selected": 38,
       "time": 90,
@@ -166,6 +295,195 @@
       "domain": 360,
       "type": 80,
       "status": 140
+    },
+    "table_visible_columns": {
+      "queries": [
+        "selected",
+        "time",
+        "client",
+        "domain",
+        "type",
+        "status"
+      ],
+      "history": [
+        "selected",
+        "time",
+        "client",
+        "domain",
+        "type",
+        "status",
+        "classified"
+      ],
+      "lists": [
+        "selected",
+        "locked",
+        "domain",
+        "enabled",
+        "tags",
+        "details"
+      ],
+      "review": [
+        "selected",
+        "order",
+        "queued",
+        "lock",
+        "domain",
+        "tags",
+        "service",
+        "role",
+        "policy",
+        "planned",
+        "confidence",
+        "breakage",
+        "short",
+        "status"
+      ],
+      "domains": [
+        "domain",
+        "tags",
+        "service",
+        "role",
+        "policy",
+        "planned",
+        "confidence",
+        "breakage",
+        "queries",
+        "last_seen",
+        "review",
+        "short"
+      ]
+    },
+    "table_column_order": {
+      "queries": [
+        "selected",
+        "time",
+        "client",
+        "domain",
+        "type",
+        "status"
+      ],
+      "history": [
+        "selected",
+        "time",
+        "client",
+        "domain",
+        "type",
+        "status",
+        "classified"
+      ],
+      "lists": [
+        "selected",
+        "locked",
+        "domain",
+        "enabled",
+        "comment",
+        "tags",
+        "details"
+      ],
+      "review": [
+        "selected",
+        "order",
+        "queued",
+        "lock",
+        "domain",
+        "tags",
+        "service",
+        "role",
+        "policy",
+        "planned",
+        "confidence",
+        "privacy",
+        "security",
+        "breakage",
+        "short",
+        "status"
+      ],
+      "domains": [
+        "domain",
+        "tags",
+        "service",
+        "role",
+        "policy",
+        "planned",
+        "confidence",
+        "privacy",
+        "security",
+        "breakage",
+        "queries",
+        "last_seen",
+        "classified",
+        "recheck",
+        "review",
+        "lock",
+        "provider",
+        "short"
+      ]
+    },
+    "table_column_widths": {
+      "queries": {
+        "selected": 38,
+        "time": 90,
+        "client": 170,
+        "domain": 360,
+        "type": 80,
+        "status": 140
+      },
+      "history": {
+        "selected": 38,
+        "time": 150,
+        "client": 180,
+        "domain": 390,
+        "type": 80,
+        "status": 150,
+        "classified": 90
+      },
+      "lists": {
+        "selected": 38,
+        "locked": 58,
+        "domain": 290,
+        "enabled": 70,
+        "comment": 260,
+        "tags": 230,
+        "details": 430
+      },
+      "review": {
+        "selected": 38,
+        "order": 48,
+        "queued": 115,
+        "lock": 48,
+        "domain": 250,
+        "tags": 230,
+        "service": 180,
+        "role": 80,
+        "policy": 105,
+        "planned": 95,
+        "confidence": 65,
+        "privacy": 65,
+        "security": 65,
+        "breakage": 90,
+        "short": 300,
+        "status": 120
+      },
+      "domains": {
+        "domain": 280,
+        "tags": 240,
+        "service": 180,
+        "role": 80,
+        "policy": 105,
+        "planned": 95,
+        "confidence": 65,
+        "privacy": 65,
+        "security": 65,
+        "breakage": 70,
+        "queries": 80,
+        "last_seen": 135,
+        "classified": 135,
+        "recheck": 135,
+        "review": 65,
+        "lock": 70,
+        "provider": 150,
+        "short": 340
+      }
     }
   }
 }

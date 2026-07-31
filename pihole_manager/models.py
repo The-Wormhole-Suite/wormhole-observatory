@@ -41,6 +41,9 @@ class ResearchFinding:
     summary: str
     source_url: str = ""
     confidence: float = 0.0
+    signal_type: str = "context"
+    verdict: str = "unknown"
+    decision_relevant: bool = False
     retrieved_at: int = 0
     expires_at: int = 0
     raw_data: dict[str, Any] = field(default_factory=dict)

@@ -64,11 +64,12 @@ class PiHole6Connection:
         self._closed = False
 
         self.session = session or requests.Session()
+        retries = max(0, int(max_retries))
         retry = Retry(
-            total=max(0, int(max_retries)),
-            connect=max(0, int(max_retries)),
-            read=max(0, int(max_retries)),
-            status=max(0, int(max_retries)),
+            total=retries,
+            connect=0,
+            read=min(1, retries),
+            status=retries,
             backoff_factor=0.5,
             status_forcelist=(429, 500, 502, 503, 504),
             allowed_methods=frozenset({"GET", "HEAD", "OPTIONS"}),
@@ -151,7 +152,9 @@ class PiHole6Connection:
         except requests.Timeout as exc:
             raise PiHole6ConnectionError(f"Request timed out: {url}") from exc
         except requests.ConnectionError as exc:
-            raise PiHole6ConnectionError(f"Could not connect to {url}: {exc}") from exc
+            raise PiHole6ConnectionError(
+                f"Could not connect to {url}. Check the Pi-hole address, protocol, and port."
+            ) from exc
         except requests.RequestException as exc:
             raise PiHole6ConnectionError(f"Request failed for {url}: {exc}") from exc
         return response
@@ -166,21 +169,9 @@ class PiHole6Connection:
         files: Any = None,
         binary: bool = False,
     ) -> Any:
-        method = method.upper()
-        multipart = files is not None
-        response = self._send_raw(
-            method,
-            endpoint,
-            params=params,
-            json_data=None if multipart else data,
-            files=files,
-            form_data=data if multipart else None,
-        )
-
-        if response.status_code == 401 and self.password:
-            with self._lock:
-                self.session_id = None
-                self.csrf_token = None
+        with self._lock:
+            method = method.upper()
+            multipart = files is not None
             response = self._send_raw(
                 method,
                 endpoint,
@@ -190,19 +181,31 @@ class PiHole6Connection:
                 form_data=data if multipart else None,
             )
 
-        if not 200 <= response.status_code < 300:
-            payload = self._try_json(response)
-            message = self._error_message(payload, response.reason or "Request failed")
-            if response.status_code == 401:
-                raise PiHole6AuthenticationError(message)
-            raise PiHole6HTTPError(response.status_code, message, payload)
+            if response.status_code == 401 and self.password:
+                self.session_id = None
+                self.csrf_token = None
+                response = self._send_raw(
+                    method,
+                    endpoint,
+                    params=params,
+                    json_data=None if multipart else data,
+                    files=files,
+                    form_data=data if multipart else None,
+                )
 
-        if binary:
-            return response.content
-        if response.status_code == 204 or not response.content.strip():
-            return {}
-        payload = self._try_json(response)
-        return payload if payload is not None else response.text
+            if not 200 <= response.status_code < 300:
+                payload = self._try_json(response)
+                message = self._error_message(payload, response.reason or "Request failed")
+                if response.status_code == 401:
+                    raise PiHole6AuthenticationError(message)
+                raise PiHole6HTTPError(response.status_code, message, payload)
+
+            if binary:
+                return response.content
+            if response.status_code == 204 or not response.content.strip():
+                return {}
+            payload = self._try_json(response)
+            return payload if payload is not None else response.text
 
     @staticmethod
     def _try_json(response: requests.Response) -> Any:
@@ -273,24 +276,26 @@ class PiHole6Connection:
             return self.post(endpoint, data=data or {}, files=files)
 
     def close_session(self) -> None:
-        if self.session_id:
-            try:
-                self.delete("auth")
-            finally:
-                self.session_id = None
-                self.csrf_token = None
-                self.validity = None
+        with self._lock:
+            if self.session_id:
+                try:
+                    self.delete("auth")
+                finally:
+                    self.session_id = None
+                    self.csrf_token = None
+                    self.validity = None
 
     def close(self) -> None:
-        if self._closed:
-            return
-        try:
-            self.close_session()
-        except Exception:
-            log.debug("Pi-hole session logout failed", exc_info=True)
-        finally:
-            self.session.close()
-            self._closed = True
+        with self._lock:
+            if self._closed:
+                return
+            try:
+                self.close_session()
+            except Exception:
+                log.debug("Pi-hole session logout failed", exc_info=True)
+            finally:
+                self.session.close()
+                self._closed = True
 
 
 def encode_path(value: str) -> str:

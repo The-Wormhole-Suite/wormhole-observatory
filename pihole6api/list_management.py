@@ -41,16 +41,12 @@ class PiHole6ListManagement:
 
     def get_list(self, address: str, list_type: ListType) -> Any:
         _validate_list_type(list_type)
-        return self.connection.get(
-            f"lists/{encode_path(address)}", params={"type": list_type}
-        )
+        return self.connection.get(f"lists/{encode_path(address)}", params={"type": list_type})
 
     def get_lists(self, list_type: ListType | None = None) -> Any:
         if list_type is not None:
             _validate_list_type(list_type)
-        return self.connection.get(
-            "lists", params={"type": list_type} if list_type else None
-        )
+        return self.connection.get("lists", params={"type": list_type} if list_type else None)
 
     def update_list(
         self,
@@ -73,9 +69,7 @@ class PiHole6ListManagement:
 
     def delete_list(self, address: str, list_type: ListType) -> Any:
         _validate_list_type(list_type)
-        return self.connection.delete(
-            f"lists/{encode_path(address)}", params={"type": list_type}
-        )
+        return self.connection.delete(f"lists/{encode_path(address)}", params={"type": list_type})
 
     def search_list(
         self,

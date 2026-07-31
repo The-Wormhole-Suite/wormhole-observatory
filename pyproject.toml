@@ -4,19 +4,25 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pihole-manager"
-version = "0.2.0"
+version = "0.3.6"
 description = "Desktop manager for Pi-hole v6 with optional LLM-assisted domain review"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
   "requests>=2.31,<3",
+  "dnspython>=2.6,<3",
 ]
 
 [project.optional-dependencies]
 desktop-notifications = ["plyer>=2.1"]
 dev = ["pytest>=8", "ruff>=0.9"]
+build = ["pyinstaller>=6,<7"]
+windows-build = ["pyinstaller>=6,<7"]
 
 [project.scripts]
+pihole-manager-cli = "pihole_manager.__main__:main"
+
+[project.gui-scripts]
 pihole-manager = "pihole_manager.__main__:main"
 
 [tool.setuptools.packages.find]
