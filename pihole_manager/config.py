@@ -6,14 +6,16 @@ import os
 import tempfile
 import threading
 from dataclasses import asdict, dataclass, field, fields, is_dataclass
+from hashlib import sha256
 from pathlib import Path
 from typing import Any, TypeVar, cast
+from uuid import uuid4
 
 from pihole_manager.models import AutomationMode, Policy
 
 T = TypeVar("T")
 _CONFIG_LOCK = threading.RLock()
-CURRENT_SCHEMA_VERSION = 16
+CURRENT_SCHEMA_VERSION = 17
 log = logging.getLogger(__name__)
 
 
@@ -62,7 +64,26 @@ class PiHoleOptions:
 
 
 @dataclass(slots=True)
+class ProviderLimitOptions:
+    mode: str = "auto"
+    quota_group: str = ""
+    requests_per_minute: int = 0
+    requests_per_hour: int = 0
+    requests_per_day: int = 0
+    input_tokens_per_minute: int = 0
+    output_tokens_per_minute: int = 0
+    tokens_per_minute: int = 0
+    tokens_per_hour: int = 0
+    tokens_per_day: int = 0
+    units_per_day: float = 0.0
+    context_tokens: int = 0
+    max_domains_per_request: int = 0
+    safety_margin_percent: float = 10.0
+
+
+@dataclass(slots=True)
 class LLMProviderOptions:
+    provider_id: str = field(default_factory=lambda: f"provider-{uuid4().hex}")
     name: str = "Custom OpenAI-compatible"
     preset_id: str = "custom"
     api_style: str = "openai_compatible"
@@ -75,6 +96,46 @@ class LLMProviderOptions:
     max_tokens_parameter: str = "max_tokens"
     send_temperature: bool = True
     structured_output: str = "auto"
+    limits: ProviderLimitOptions = field(default_factory=ProviderLimitOptions)
+
+
+@dataclass(slots=True)
+class ProviderPoolMembershipOptions:
+    provider_id: str = ""
+    enabled: bool = True
+    role: str = "primary"
+    priority: int = 100
+    weight: int = 1
+
+
+@dataclass(slots=True)
+class AnalysisPoolOptions:
+    pool_id: str = "background"
+    name: str = "Background analysis"
+    enabled: bool = True
+    mode: str = "distribute"
+    profile_index: int = 0
+    max_parallel_requests: int = 2
+    verification_sample_percent: int = 10
+    verify_automatic_actions: bool = True
+    verify_security_risk_at_least: int = 80
+    verify_breakage_risk_at_least: int = 50
+    memberships: list[ProviderPoolMembershipOptions] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class ProviderRegistryOptions:
+    auto_update: bool = False
+    refresh_interval_hours: int = 168
+    last_checked_at: int = 0
+    registry_url: str = (
+        "https://github.com/HyperCriSiS/Pi-Hole-Manager/releases/latest/download/"
+        "provider-registry.json"
+    )
+    signature_url: str = (
+        "https://github.com/HyperCriSiS/Pi-Hole-Manager/releases/latest/download/"
+        "provider-registry.json.sig"
+    )
 
 
 @dataclass(slots=True)
@@ -172,6 +233,10 @@ class LLMOptions:
     domains_per_request: int = 10
     min_request_interval_sec: float = 1.0
     max_retries: int = 2
+    realtime_quota_reserve_percent: float = 20.0
+    quota_wait_timeout_sec: float = 30.0
+    unknown_remote_requests_per_minute: int = 2
+    unknown_remote_max_domains_per_request: int = 1
     active_provider_index: int = 0
     active_profile_index: int = 0
     automation_mode: str = AutomationMode.HYBRID.value
@@ -423,7 +488,9 @@ class Options:
     llm: LLMOptions = field(default_factory=LLMOptions)
     research: ResearchOptions = field(default_factory=ResearchOptions)
     updates: UpdateOptions = field(default_factory=UpdateOptions)
+    provider_registry: ProviderRegistryOptions = field(default_factory=ProviderRegistryOptions)
     llm_providers: list[LLMProviderOptions] = field(default_factory=lambda: [LLMProviderOptions()])
+    analysis_pools: list[AnalysisPoolOptions] = field(default_factory=list)
     prompt_profiles: list[PromptProfileOptions] = field(
         default_factory=lambda: [PromptProfileOptions()]
     )
@@ -553,8 +620,90 @@ def _load_list(raw: Any, cls: type[T], fallback: list[T]) -> list[T]:
     return loaded or fallback
 
 
+def _load_llm_providers(raw: Any) -> list[LLMProviderOptions]:
+    if not isinstance(raw, list):
+        return [LLMProviderOptions()]
+    providers: list[LLMProviderOptions] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        provider = _coerce_dataclass(LLMProviderOptions, item)
+        provider.limits = _coerce_dataclass(ProviderLimitOptions, item.get("limits"))
+        providers.append(provider)
+    return providers or [LLMProviderOptions()]
+
+
+def _load_analysis_pools(raw: Any) -> list[AnalysisPoolOptions]:
+    if not isinstance(raw, list):
+        return []
+    pools: list[AnalysisPoolOptions] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        pool = _coerce_dataclass(AnalysisPoolOptions, item)
+        pool.memberships = _load_list(
+            item.get("memberships"),
+            ProviderPoolMembershipOptions,
+            [],
+        )
+        pools.append(pool)
+    return pools
+
+
 def _mapping(raw: Any) -> dict[str, Any]:
     return dict(raw) if isinstance(raw, dict) else {}
+
+
+def _migrated_provider_id(provider: dict[str, Any], index: int, used: set[str]) -> str:
+    configured = str(provider.get("provider_id") or "").strip()
+    if configured and configured not in used:
+        used.add(configured)
+        return configured
+    identity = "\0".join(
+        (
+            str(index),
+            str(provider.get("name") or ""),
+            str(provider.get("base_url") or ""),
+            str(provider.get("model") or ""),
+        )
+    )
+    candidate = f"provider-{sha256(identity.encode('utf-8')).hexdigest()[:20]}"
+    suffix = 2
+    while candidate in used:
+        candidate = f"{candidate}-{suffix}"
+        suffix += 1
+    used.add(candidate)
+    return candidate
+
+
+def _default_analysis_pool(
+    pool_id: str,
+    provider_id: str,
+    *,
+    profile_index: int = 0,
+) -> dict[str, Any]:
+    realtime = pool_id == "realtime"
+    return {
+        "pool_id": pool_id,
+        "name": "Realtime analysis" if realtime else "Background analysis",
+        "enabled": True,
+        "mode": "fallback" if realtime else "distribute",
+        "profile_index": profile_index,
+        "max_parallel_requests": 2,
+        "verification_sample_percent": 10,
+        "verify_automatic_actions": True,
+        "verify_security_risk_at_least": 80,
+        "verify_breakage_risk_at_least": 50,
+        "memberships": [
+            {
+                "provider_id": provider_id,
+                "enabled": True,
+                "role": "primary",
+                "priority": 100,
+                "weight": 1,
+            }
+        ],
+    }
 
 
 def _migrate(raw: dict[str, Any]) -> dict[str, Any]:
@@ -636,6 +785,12 @@ def _migrate(raw: dict[str, Any]) -> dict[str, Any]:
     updates_raw.setdefault("last_check_at", 0)
     data["updates"] = updates_raw
 
+    registry_raw = _mapping(data.get("provider_registry"))
+    registry_defaults = asdict(ProviderRegistryOptions())
+    for key, value in registry_defaults.items():
+        registry_raw.setdefault(key, value)
+    data["provider_registry"] = registry_raw
+
     research_raw = _mapping(data.get("research"))
     legacy_research_enabled = research_raw.get("enabled")
     research_raw.pop("enabled", None)
@@ -701,21 +856,27 @@ def _migrate(raw: dict[str, Any]) -> dict[str, Any]:
             provider["enabled"] = False
         research_providers.append(provider)
     configured_kinds = {str(item.get("kind") or "") for item in research_providers}
-    for default_provider in Options().research_providers:
-        if default_provider.kind not in configured_kinds:
-            research_providers.append(asdict(default_provider))
+    for default_research_provider in Options().research_providers:
+        if default_research_provider.kind not in configured_kinds:
+            research_providers.append(asdict(default_research_provider))
     data["research_providers"] = research_providers
 
     providers = []
-    for raw_provider in data.get("llm_providers") or []:
+    used_provider_ids: set[str] = set()
+    for index, raw_provider in enumerate(data.get("llm_providers") or []):
         if not isinstance(raw_provider, dict):
             continue
         provider = dict(raw_provider)
+        provider["provider_id"] = _migrated_provider_id(provider, index, used_provider_ids)
         provider.setdefault("preset_id", "custom")
         provider.setdefault("api_style", "openai_compatible")
         provider.setdefault("max_output_tokens", 4096)
         provider.setdefault("max_tokens_parameter", "max_tokens")
         provider.setdefault("send_temperature", True)
+        limits = _mapping(provider.get("limits"))
+        for key, value in asdict(ProviderLimitOptions()).items():
+            limits.setdefault(key, value)
+        provider["limits"] = limits
         base_url = str(provider.get("base_url") or "").strip().rstrip("/")
         if (
             base_url
@@ -724,8 +885,51 @@ def _migrate(raw: dict[str, Any]) -> dict[str, Any]:
         ):
             provider["base_url"] = base_url + "/v1"
         providers.append(provider)
-    if providers:
-        data["llm_providers"] = providers
+    if not providers:
+        default_llm_provider = asdict(LLMProviderOptions())
+        default_llm_provider["provider_id"] = _migrated_provider_id(
+            default_llm_provider,
+            0,
+            used_provider_ids,
+        )
+        providers.append(default_llm_provider)
+    data["llm_providers"] = providers
+
+    configured_provider_ids = {str(provider["provider_id"]) for provider in providers}
+    active_provider_index = min(
+        max(0, _as_int(llm.get("active_provider_index"), 0)),
+        len(providers) - 1,
+    )
+    active_provider_id = str(providers[active_provider_index]["provider_id"])
+    active_profile_index = max(0, _as_int(llm.get("active_profile_index"), 0))
+    raw_pools = data.get("analysis_pools")
+    pools: list[dict[str, Any]] = []
+    if isinstance(raw_pools, list):
+        for raw_pool in raw_pools:
+            if not isinstance(raw_pool, dict):
+                continue
+            pool = dict(raw_pool)
+            memberships = []
+            for raw_membership in pool.get("memberships") or []:
+                if not isinstance(raw_membership, dict):
+                    continue
+                membership = dict(raw_membership)
+                provider_id = str(membership.get("provider_id") or "").strip()
+                if provider_id in configured_provider_ids:
+                    memberships.append(membership)
+            pool["memberships"] = memberships
+            pools.append(pool)
+    configured_pool_ids = {str(pool.get("pool_id") or "").strip().lower() for pool in pools}
+    for pool_id in ("realtime", "background"):
+        if pool_id not in configured_pool_ids:
+            pools.append(
+                _default_analysis_pool(
+                    pool_id,
+                    active_provider_id,
+                    profile_index=active_profile_index,
+                )
+            )
+    data["analysis_pools"] = pools
 
     data["schema_version"] = CURRENT_SCHEMA_VERSION
     return data
@@ -878,6 +1082,37 @@ def _validate(options: Options) -> Options:
         ),
     )
     options.llm.max_retries = max(0, _as_int(options.llm.max_retries, defaults.llm.max_retries))
+    options.llm.realtime_quota_reserve_percent = min(
+        90.0,
+        max(
+            0.0,
+            _as_float(
+                options.llm.realtime_quota_reserve_percent,
+                defaults.llm.realtime_quota_reserve_percent,
+            ),
+        ),
+    )
+    options.llm.quota_wait_timeout_sec = max(
+        0.0,
+        _as_float(
+            options.llm.quota_wait_timeout_sec,
+            defaults.llm.quota_wait_timeout_sec,
+        ),
+    )
+    options.llm.unknown_remote_requests_per_minute = max(
+        1,
+        _as_int(
+            options.llm.unknown_remote_requests_per_minute,
+            defaults.llm.unknown_remote_requests_per_minute,
+        ),
+    )
+    options.llm.unknown_remote_max_domains_per_request = max(
+        1,
+        _as_int(
+            options.llm.unknown_remote_max_domains_per_request,
+            defaults.llm.unknown_remote_max_domains_per_request,
+        ),
+    )
     options.llm.default_recheck_days = max(
         1,
         _as_int(
@@ -974,6 +1209,30 @@ def _validate(options: Options) -> Options:
         0,
         _as_int(options.updates.last_check_at, defaults.updates.last_check_at),
     )
+    options.provider_registry.auto_update = _as_bool(
+        options.provider_registry.auto_update,
+        defaults.provider_registry.auto_update,
+    )
+    options.provider_registry.refresh_interval_hours = max(
+        1,
+        _as_int(
+            options.provider_registry.refresh_interval_hours,
+            defaults.provider_registry.refresh_interval_hours,
+        ),
+    )
+    options.provider_registry.last_checked_at = max(
+        0,
+        _as_int(
+            options.provider_registry.last_checked_at,
+            defaults.provider_registry.last_checked_at,
+        ),
+    )
+    options.provider_registry.registry_url = str(
+        options.provider_registry.registry_url or defaults.provider_registry.registry_url
+    ).strip()
+    options.provider_registry.signature_url = str(
+        options.provider_registry.signature_url or defaults.provider_registry.signature_url
+    ).strip()
 
     if not isinstance(options.scans.excluded_domain_suffixes, list):
         options.scans.excluded_domain_suffixes = [".arpa"]
@@ -1070,7 +1329,13 @@ def _validate(options: Options) -> Options:
     options.ui.queries_colwidths = dict(options.ui.table_column_widths["queries"])
 
     options.llm_providers = options.llm_providers or [LLMProviderOptions()]
+    used_provider_ids: set[str] = set()
     for llm_provider in options.llm_providers:
+        provider_id = str(llm_provider.provider_id or "").strip()
+        if not provider_id or provider_id in used_provider_ids:
+            provider_id = f"provider-{uuid4().hex}"
+        llm_provider.provider_id = provider_id
+        used_provider_ids.add(provider_id)
         llm_provider.name = str(llm_provider.name or "Unnamed provider")
         llm_provider.preset_id = str(llm_provider.preset_id).strip().lower() or "custom"
         llm_provider.api_style = str(llm_provider.api_style).strip().lower()
@@ -1103,6 +1368,31 @@ def _validate(options: Options) -> Options:
             "prompt_only",
         }:
             llm_provider.structured_output = "auto"
+        if not isinstance(llm_provider.limits, ProviderLimitOptions):
+            llm_provider.limits = ProviderLimitOptions()
+        limits = llm_provider.limits
+        limits.mode = str(limits.mode or "").strip().lower()
+        if limits.mode not in {"auto", "auto_cap", "manual"}:
+            limits.mode = "auto"
+        limits.quota_group = str(limits.quota_group or "").strip()
+        for field_name in (
+            "requests_per_minute",
+            "requests_per_hour",
+            "requests_per_day",
+            "input_tokens_per_minute",
+            "output_tokens_per_minute",
+            "tokens_per_minute",
+            "tokens_per_hour",
+            "tokens_per_day",
+            "context_tokens",
+            "max_domains_per_request",
+        ):
+            setattr(limits, field_name, max(0, _as_int(getattr(limits, field_name), 0)))
+        limits.units_per_day = max(0.0, _as_float(limits.units_per_day, 0.0))
+        limits.safety_margin_percent = min(
+            50.0,
+            max(0.0, _as_float(limits.safety_margin_percent, 10.0)),
+        )
 
     options.prompt_profiles = options.prompt_profiles or [PromptProfileOptions()]
     for profile in options.prompt_profiles:
@@ -1167,6 +1457,84 @@ def _validate(options: Options) -> Options:
         max(0, _as_int(options.llm.active_profile_index, 0)),
         len(options.prompt_profiles) - 1,
     )
+    provider_ids = {provider.provider_id for provider in options.llm_providers}
+    pools_by_id: dict[str, AnalysisPoolOptions] = {}
+    for pool in options.analysis_pools:
+        pool_id = str(pool.pool_id or "").strip().lower()
+        if pool_id not in {"realtime", "background"} or pool_id in pools_by_id:
+            continue
+        pool.pool_id = pool_id
+        pool.name = str(
+            pool.name or ("Realtime analysis" if pool_id == "realtime" else "Background analysis")
+        )
+        pool.enabled = _as_bool(pool.enabled, True)
+        pool.mode = str(pool.mode or "").strip().lower()
+        if pool.mode not in {"distribute", "fallback", "compare", "verify"}:
+            pool.mode = "fallback" if pool_id == "realtime" else "distribute"
+        pool.profile_index = min(
+            max(0, _as_int(pool.profile_index, options.llm.active_profile_index)),
+            len(options.prompt_profiles) - 1,
+        )
+        pool.max_parallel_requests = min(
+            16,
+            max(1, _as_int(pool.max_parallel_requests, 2)),
+        )
+        pool.verification_sample_percent = min(
+            100,
+            max(0, _as_int(pool.verification_sample_percent, 10)),
+        )
+        pool.verify_automatic_actions = _as_bool(pool.verify_automatic_actions, True)
+        pool.verify_security_risk_at_least = min(
+            100,
+            max(0, _as_int(pool.verify_security_risk_at_least, 80)),
+        )
+        pool.verify_breakage_risk_at_least = min(
+            100,
+            max(0, _as_int(pool.verify_breakage_risk_at_least, 50)),
+        )
+        memberships: list[ProviderPoolMembershipOptions] = []
+        seen_memberships: set[str] = set()
+        for membership in pool.memberships:
+            provider_id = str(membership.provider_id or "").strip()
+            if provider_id not in provider_ids or provider_id in seen_memberships:
+                continue
+            membership.provider_id = provider_id
+            membership.enabled = _as_bool(membership.enabled, True)
+            membership.role = str(membership.role or "").strip().lower()
+            if membership.role not in {"primary", "fallback", "verifier"}:
+                membership.role = "primary"
+            membership.priority = min(
+                10_000,
+                max(0, _as_int(membership.priority, 100)),
+            )
+            membership.weight = min(100, max(1, _as_int(membership.weight, 1)))
+            memberships.append(membership)
+            seen_memberships.add(provider_id)
+        if not memberships:
+            memberships.append(
+                ProviderPoolMembershipOptions(
+                    provider_id=options.llm_providers[options.llm.active_provider_index].provider_id
+                )
+            )
+        pool.memberships = memberships
+        pools_by_id[pool_id] = pool
+    active_provider_id = options.llm_providers[options.llm.active_provider_index].provider_id
+    for pool_id in ("realtime", "background"):
+        if pool_id not in pools_by_id:
+            pool = _coerce_dataclass(
+                AnalysisPoolOptions,
+                _default_analysis_pool(
+                    pool_id,
+                    active_provider_id,
+                    profile_index=options.llm.active_profile_index,
+                ),
+            )
+            pool.memberships = [ProviderPoolMembershipOptions(provider_id=active_provider_id)]
+            pools_by_id[pool_id] = pool
+    options.analysis_pools = [
+        pools_by_id["realtime"],
+        pools_by_id["background"],
+    ]
     return options
 
 
@@ -1195,9 +1563,12 @@ def load_options() -> Options:
                 llm=_coerce_dataclass(LLMOptions, raw.get("llm")),
                 research=_coerce_dataclass(ResearchOptions, raw.get("research")),
                 updates=_coerce_dataclass(UpdateOptions, raw.get("updates")),
-                llm_providers=_load_list(
-                    raw.get("llm_providers"), LLMProviderOptions, [LLMProviderOptions()]
+                provider_registry=_coerce_dataclass(
+                    ProviderRegistryOptions,
+                    raw.get("provider_registry"),
                 ),
+                llm_providers=_load_llm_providers(raw.get("llm_providers")),
+                analysis_pools=_load_analysis_pools(raw.get("analysis_pools")),
                 prompt_profiles=_load_list(
                     raw.get("prompt_profiles"),
                     PromptProfileOptions,

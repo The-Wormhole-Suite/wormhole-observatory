@@ -18,6 +18,19 @@ class AutomationMode(StrEnum):
     AUTO = "auto"
 
 
+class AnalysisPoolMode(StrEnum):
+    DISTRIBUTE = "distribute"
+    FALLBACK = "fallback"
+    COMPARE = "compare"
+    VERIFY = "verify"
+
+
+class ProviderLimitMode(StrEnum):
+    AUTO = "auto"
+    AUTO_CAP = "auto_cap"
+    MANUAL = "manual"
+
+
 class ServiceRole(StrEnum):
     CORE = "core"
     OPTIONAL = "optional"
@@ -68,6 +81,40 @@ class Classification:
     review_reason: str = ""
     recheck_after_days: int = 30
     raw_text: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderUsage:
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    units: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderHealthState:
+    provider_id: str
+    state: str = "unknown"
+    cooldown_until: float = 0.0
+    consecutive_failures: int = 0
+    last_error: str = ""
+    last_success_at: float = 0.0
+    last_failure_at: float = 0.0
+    latency_ewma_ms: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class ClassificationRunContext:
+    analysis_run_id: str = ""
+    pool_id: str = ""
+    pool_mode: str = ""
+    provider_id: str = ""
+    model: str = ""
+    profile: str = ""
+    prompt_hash: str = ""
+    is_primary: bool = True
+    latency_ms: int = 0
+    usage: ProviderUsage = field(default_factory=ProviderUsage)
 
 
 @dataclass(frozen=True, slots=True)

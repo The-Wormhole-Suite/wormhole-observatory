@@ -37,9 +37,14 @@ The query collector queues domains that are new or due for re-evaluation. Locked
 excluded from automatic collection and scheduled rechecks. Manual jobs use higher priority and
 bypass the automatic queue threshold.
 
-The analysis worker starts when the configured queue size is reached, the oldest automatic job
-exceeds its wait limit, or a manual job exists. For every claimed domain it builds a dossier,
-calls the LLM, validates the result, stores the immutable run, and invokes the policy engine.
+Separate realtime and background analysis workers start when their own eligible queue reaches the
+configured size, the oldest automatic job exceeds its wait limit, or a manual job exists. For every
+claimed domain the worker builds a dossier, freezes it for the analysis run, dispatches it through
+the selected pool, validates every result, and stores immutable provider runs. Only primary results
+can invoke the policy engine. Compare results are history-only.
+
+Quota-delayed jobs have an `available_at` time and are not repeatedly reclaimed before that time.
+Realtime and background queue claims are atomic and isolated by pool.
 
 Simulation mode sits between policy resolution and enforcement. It records the resolved action,
 marks it as `simulated`, and creates a reviewable pending action without calling the Pi-hole API.
@@ -88,6 +93,28 @@ unknown or duplicate domains, and omitted domains.
 A browsing-capable LLM is instructed to consult official documentation and targeted GitHub
 repositories, issues, discussions, Pi-hole community reports, and credible user reports. Generic
 GitHub search is not part of the deterministic evidence layer.
+
+## Analysis dispatch and quota
+
+`AnalysisPool`, `ProviderPoolMembership`, `ProviderCapability`, `ProviderLimitProfile`,
+`RuntimeQuotaState`, `QuotaReservation`, `ProviderHealthState`, `ModelBenchmarkRun`, and
+`ModelBenchmarkResult` are explicit configuration or persistence concepts.
+
+Pool modes are distribute, fallback, compare, and verify. Distribution assigns one provider per
+domain. Fallback is limited to operational unavailability. Compare never changes current domain
+state. Verification compares an independent result with the primary classification and turns
+material differences into a manual-review veto.
+
+Before every provider HTTP attempt, the quota manager opens an immediate SQLite transaction,
+expires abandoned reservations, checks all applicable request/token/unit windows and current live
+header state, and inserts one reservation. Completed calls replace estimates with reported usage;
+connection failures cancel reservations. Account and organization quotas use a non-secret API-key
+fingerprint and optional quota group so multiple models share the same budget without persisting
+credentials.
+
+The registry trust order is user cap, live header, verified online registry, bundled registry, and
+conservative unknown-provider defaults. Online registry bytes are accepted only over HTTPS after an
+Ed25519 signature check and downgrade protection.
 
 ## Policy resolution
 

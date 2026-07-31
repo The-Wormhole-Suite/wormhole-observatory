@@ -163,12 +163,21 @@ def _review_save(
 def save_classification_run(
     classification: Classification,
     *,
+    provider_id: str = "",
     model: str = "",
     profile: str = "",
     prompt_hash: str = "",
     status: str = "classified",
     planned_action: str = "",
     action_status: str = "none",
+    analysis_run_id: str = "",
+    pool_id: str = "",
+    pool_mode: str = "",
+    is_primary: bool = True,
+    latency_ms: int = 0,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    update_current: bool = True,
 ) -> int:
     now = int(time.time())
     expires_at = now + max(1, int(classification.recheck_after_days)) * 86400
@@ -182,15 +191,21 @@ def save_classification_run(
         cursor = connection.execute(
             """
             INSERT INTO classification_runs(
-                domain, provider, model, profile, prompt_hash, policy, primary_tag,
+                domain, provider, provider_id, model, profile, prompt_hash, policy, primary_tag,
                 tags_json, service, service_role, privacy_risk, security_risk,
                 breakage_risk, confidence, needs_review, review_reason, short,
-                details, raw_text, planned_action, action_status, created_at, expires_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                details, raw_text, planned_action, action_status, analysis_run_id,
+                pool_id, pool_mode, is_primary, latency_ms, input_tokens,
+                output_tokens, created_at, expires_at
+            ) VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?, ?, ?
+            )
             """,
             (
                 domain,
                 classification.provider,
+                provider_id.strip(),
                 model,
                 profile,
                 prompt_hash,
@@ -210,60 +225,70 @@ def save_classification_run(
                 classification.raw_text,
                 _normalize_planned_action(planned_action),
                 _normalize_action_status(action_status),
+                analysis_run_id.strip(),
+                pool_id.strip().lower(),
+                pool_mode.strip().lower(),
+                int(bool(is_primary)),
+                max(0, int(latency_ms)),
+                max(0, int(input_tokens)),
+                max(0, int(output_tokens)),
                 now,
                 expires_at,
             ),
         )
-        connection.execute(
-            """
-            UPDATE domains SET
-                last_classified_at = ?, next_recheck_at = ?, current_policy = ?,
-                current_service = ?, current_service_role = ?
-            WHERE domain = ?
-            """,
-            (
-                now,
-                expires_at,
-                classification.policy.value,
-                classification.service,
-                classification.service_role.value,
+        if update_current:
+            connection.execute(
+                """
+                UPDATE domains SET
+                    last_classified_at = ?, next_recheck_at = ?, current_policy = ?,
+                    current_service = ?, current_service_role = ?
+                WHERE domain = ?
+                """,
+                (
+                    now,
+                    expires_at,
+                    classification.policy.value,
+                    classification.service,
+                    classification.service_role.value,
+                    domain,
+                ),
+            )
+            _replace_source_tags(
+                connection,
                 domain,
-            ),
-        )
-        _replace_source_tags(
-            connection,
-            domain,
-            tags,
-            "llm",
-            classification.confidence,
-            now,
-        )
-        _review_save(
-            connection,
-            classification.domain,
-            tags,
-            classification.details,
-            status,
-            policy=classification.policy.value,
-            short=classification.short,
-            provider=classification.provider,
-            service=classification.service,
-            service_role=classification.service_role.value,
-            privacy_risk=classification.privacy_risk,
-            security_risk=classification.security_risk,
-            breakage_risk=classification.breakage_risk,
-            confidence=classification.confidence,
-            needs_review=classification.needs_review or normalized_action_status == "simulated",
-            review_reason=(
-                f"Simulation mode prevented automatic {planned_action}."
-                if normalized_action_status == "simulated"
-                else classification.review_reason
-            ),
-            next_recheck_at=expires_at,
-            planned_action=planned_action,
-            action_status=action_status,
-            now=now,
-        )
+                tags,
+                "llm",
+                classification.confidence,
+                now,
+            )
+            _review_save(
+                connection,
+                classification.domain,
+                tags,
+                classification.details,
+                status,
+                policy=classification.policy.value,
+                short=classification.short,
+                provider=classification.provider,
+                service=classification.service,
+                service_role=classification.service_role.value,
+                privacy_risk=classification.privacy_risk,
+                security_risk=classification.security_risk,
+                breakage_risk=classification.breakage_risk,
+                confidence=classification.confidence,
+                needs_review=(
+                    classification.needs_review or normalized_action_status == "simulated"
+                ),
+                review_reason=(
+                    f"Simulation mode prevented automatic {planned_action}."
+                    if normalized_action_status == "simulated"
+                    else classification.review_reason
+                ),
+                next_recheck_at=expires_at,
+                planned_action=planned_action,
+                action_status=action_status,
+                now=now,
+            )
         run_id = cursor.lastrowid
     if run_id is None:
         raise RuntimeError("Classification run was saved without an identifier")
@@ -274,20 +299,38 @@ def review_save_classification(
     classification: Classification,
     status: str = "classified",
     *,
+    provider_id: str = "",
     model: str = "",
     profile: str = "",
     prompt_hash: str = "",
     planned_action: str = "",
     action_status: str = "none",
+    analysis_run_id: str = "",
+    pool_id: str = "",
+    pool_mode: str = "",
+    is_primary: bool = True,
+    latency_ms: int = 0,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    update_current: bool = True,
 ) -> None:
     save_classification_run(
         classification,
+        provider_id=provider_id,
         model=model,
         profile=profile,
         prompt_hash=prompt_hash,
         status=status,
         planned_action=planned_action,
         action_status=action_status,
+        analysis_run_id=analysis_run_id,
+        pool_id=pool_id,
+        pool_mode=pool_mode,
+        is_primary=is_primary,
+        latency_ms=latency_ms,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        update_current=update_current,
     )
 
 

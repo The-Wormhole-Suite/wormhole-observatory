@@ -12,7 +12,7 @@ from typing import Any
 from pihole_manager.config import database_path, load_options
 
 _DB_LOCK = threading.RLock()
-DATABASE_SCHEMA_VERSION = 7
+DATABASE_SCHEMA_VERSION = 11
 
 
 @contextmanager
@@ -58,7 +58,9 @@ def init_db() -> None:
                 updated_at INTEGER NOT NULL,
                 last_error TEXT NOT NULL DEFAULT '',
                 priority INTEGER NOT NULL DEFAULT 0,
-                source TEXT NOT NULL DEFAULT ''
+                source TEXT NOT NULL DEFAULT '',
+                pool_id TEXT NOT NULL DEFAULT 'background',
+                available_at INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE INDEX IF NOT EXISTS idx_staging_state_created
@@ -129,6 +131,7 @@ def init_db() -> None:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 domain TEXT NOT NULL REFERENCES domains(domain) ON DELETE CASCADE,
                 provider TEXT NOT NULL,
+                provider_id TEXT NOT NULL DEFAULT '',
                 model TEXT NOT NULL DEFAULT '',
                 profile TEXT NOT NULL DEFAULT '',
                 prompt_hash TEXT NOT NULL DEFAULT '',
@@ -148,6 +151,13 @@ def init_db() -> None:
                 raw_text TEXT NOT NULL DEFAULT '',
                 planned_action TEXT NOT NULL DEFAULT '',
                 action_status TEXT NOT NULL DEFAULT 'none',
+                analysis_run_id TEXT NOT NULL DEFAULT '',
+                pool_id TEXT NOT NULL DEFAULT '',
+                pool_mode TEXT NOT NULL DEFAULT '',
+                is_primary INTEGER NOT NULL DEFAULT 1,
+                latency_ms INTEGER NOT NULL DEFAULT 0,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
                 created_at INTEGER NOT NULL,
                 expires_at INTEGER NOT NULL
             );
@@ -203,12 +213,101 @@ def init_db() -> None:
                 value TEXT NOT NULL,
                 updated_at INTEGER NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS analysis_runs (
+                id TEXT PRIMARY KEY,
+                pool_id TEXT NOT NULL,
+                mode TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT '',
+                dossier_hash TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'running',
+                error TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL,
+                completed_at INTEGER
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_analysis_runs_created
+                ON analysis_runs(created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS provider_health (
+                provider_id TEXT PRIMARY KEY,
+                state TEXT NOT NULL DEFAULT 'unknown',
+                cooldown_until REAL NOT NULL DEFAULT 0,
+                consecutive_failures INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT NOT NULL DEFAULT '',
+                last_success_at REAL NOT NULL DEFAULT 0,
+                last_failure_at REAL NOT NULL DEFAULT 0,
+                latency_ewma_ms REAL NOT NULL DEFAULT 0,
+                updated_at REAL NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS quota_reservations (
+                id TEXT PRIMARY KEY,
+                scope_key TEXT NOT NULL,
+                provider_id TEXT NOT NULL,
+                pool_id TEXT NOT NULL,
+                state TEXT NOT NULL DEFAULT 'reserved',
+                domain_count INTEGER NOT NULL DEFAULT 1,
+                request_count INTEGER NOT NULL DEFAULT 1,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                units REAL NOT NULL DEFAULT 0,
+                created_at REAL NOT NULL,
+                expires_at REAL NOT NULL,
+                completed_at REAL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_quota_scope_created
+                ON quota_reservations(scope_key, created_at);
+
+            CREATE TABLE IF NOT EXISTS runtime_quota_state (
+                scope_key TEXT NOT NULL,
+                metric TEXT NOT NULL,
+                window_seconds INTEGER NOT NULL,
+                limit_amount REAL NOT NULL DEFAULT 0,
+                remaining_amount REAL NOT NULL DEFAULT 0,
+                reset_at REAL NOT NULL DEFAULT 0,
+                observed_at REAL NOT NULL DEFAULT 0,
+                source TEXT NOT NULL DEFAULT 'live_header',
+                PRIMARY KEY(scope_key, metric, window_seconds)
+            );
+
+            CREATE TABLE IF NOT EXISTS model_benchmark_runs (
+                id TEXT PRIMARY KEY,
+                domain TEXT NOT NULL,
+                pool_id TEXT NOT NULL,
+                dossier_json TEXT NOT NULL,
+                dossier_hash TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'running',
+                created_at INTEGER NOT NULL,
+                completed_at INTEGER
+            );
+
+            CREATE TABLE IF NOT EXISTS model_benchmark_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL REFERENCES model_benchmark_runs(id) ON DELETE CASCADE,
+                provider_id TEXT NOT NULL,
+                provider_name TEXT NOT NULL,
+                model TEXT NOT NULL,
+                status TEXT NOT NULL,
+                error TEXT NOT NULL DEFAULT '',
+                latency_ms INTEGER NOT NULL DEFAULT 0,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                classification_json TEXT NOT NULL DEFAULT '{}',
+                raw_text TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_benchmark_results_run
+                ON model_benchmark_results(run_id, id);
             """
         )
         _migrate_staging_table(connection)
         _migrate_review_table(connection)
         _migrate_classification_table(connection)
         _migrate_research_table(connection)
+        _migrate_quota_tables(connection)
         connection.execute(
             """
             INSERT INTO schema_meta(key, value) VALUES ('schema_version', ?)
@@ -240,10 +339,25 @@ def _migrate_staging_table(connection: sqlite3.Connection) -> None:
     additions = {
         "priority": "INTEGER NOT NULL DEFAULT 0",
         "source": "TEXT NOT NULL DEFAULT ''",
+        "pool_id": "TEXT NOT NULL DEFAULT 'background'",
+        "available_at": "INTEGER NOT NULL DEFAULT 0",
     }
     for name, definition in additions.items():
         if name not in columns:
             connection.execute(f"ALTER TABLE staging_domains ADD COLUMN {name} {definition}")
+    connection.execute(
+        """
+        UPDATE staging_domains
+        SET pool_id = 'realtime'
+        WHERE priority >= 100 OR source LIKE 'manual_%'
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_staging_pool_state_created
+        ON staging_domains(pool_id, state, priority DESC, created_at)
+        """
+    )
 
 
 def _migrate_classification_table(connection: sqlite3.Connection) -> None:
@@ -254,6 +368,14 @@ def _migrate_classification_table(connection: sqlite3.Connection) -> None:
     additions = {
         "planned_action": "TEXT NOT NULL DEFAULT ''",
         "action_status": "TEXT NOT NULL DEFAULT 'none'",
+        "provider_id": "TEXT NOT NULL DEFAULT ''",
+        "analysis_run_id": "TEXT NOT NULL DEFAULT ''",
+        "pool_id": "TEXT NOT NULL DEFAULT ''",
+        "pool_mode": "TEXT NOT NULL DEFAULT ''",
+        "is_primary": "INTEGER NOT NULL DEFAULT 1",
+        "latency_ms": "INTEGER NOT NULL DEFAULT 0",
+        "input_tokens": "INTEGER NOT NULL DEFAULT 0",
+        "output_tokens": "INTEGER NOT NULL DEFAULT 0",
     }
     for name, definition in additions.items():
         if name not in columns:
@@ -283,6 +405,31 @@ def _migrate_research_table(connection: sqlite3.Connection) -> None:
               AND CAST(raw_data AS TEXT) != ''
             """
         )
+
+
+def _migrate_quota_tables(connection: sqlite3.Connection) -> None:
+    columns = {
+        str(row["name"]): row for row in connection.execute("PRAGMA table_info(quota_reservations)")
+    }
+    if "domain_count" not in columns:
+        connection.execute(
+            "ALTER TABLE quota_reservations ADD COLUMN domain_count INTEGER NOT NULL DEFAULT 1"
+        )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS runtime_quota_state (
+            scope_key TEXT NOT NULL,
+            metric TEXT NOT NULL,
+            window_seconds INTEGER NOT NULL,
+            limit_amount REAL NOT NULL DEFAULT 0,
+            remaining_amount REAL NOT NULL DEFAULT 0,
+            reset_at REAL NOT NULL DEFAULT 0,
+            observed_at REAL NOT NULL DEFAULT 0,
+            source TEXT NOT NULL DEFAULT 'live_header',
+            PRIMARY KEY(scope_key, metric, window_seconds)
+        )
+        """
+    )
 
 
 def _migrate_review_table(connection: sqlite3.Connection) -> None:
@@ -376,6 +523,15 @@ class QueueEnqueueResult:
         return self.queued + self.requeued + self.already_pending
 
 
+def _queue_pool_id(pool_id: str, priority: int, source: str) -> str:
+    normalized = pool_id.strip().lower()
+    if normalized in {"realtime", "background"}:
+        return normalized
+    if priority >= 100 or source.strip().lower().startswith("manual_"):
+        return "realtime"
+    return "background"
+
+
 def _domain_matches_suffix(domain: str, suffixes: tuple[str, ...]) -> bool:
     normalized = _normalize_domain(domain)
     for suffix in suffixes:
@@ -438,11 +594,13 @@ def staging_enqueue_detailed(
     *,
     priority: int = 0,
     source: str = "",
+    pool_id: str = "",
     requeue_existing: bool = False,
 ) -> QueueEnqueueResult:
     now = int(time.time())
     normalized_priority = max(0, int(priority))
     normalized_source = source.strip()
+    normalized_pool_id = _queue_pool_id(pool_id, normalized_priority, normalized_source)
     unique_domains: list[str] = []
     seen: set[str] = set()
     for value in domains:
@@ -477,7 +635,7 @@ def staging_enqueue_detailed(
                 continue
 
             existing = connection.execute(
-                "SELECT state, priority FROM staging_domains WHERE domain = ?",
+                "SELECT state, priority, pool_id FROM staging_domains WHERE domain = ?",
                 (domain,),
             ).fetchone()
             if existing is None:
@@ -485,10 +643,17 @@ def staging_enqueue_detailed(
                     """
                     INSERT INTO staging_domains(
                         domain, state, attempts, created_at, updated_at, last_error,
-                        priority, source
-                    ) VALUES (?, 'queued', 0, ?, ?, '', ?, ?)
+                        priority, source, pool_id, available_at
+                    ) VALUES (?, 'queued', 0, ?, ?, '', ?, ?, ?, 0)
                     """,
-                    (domain, now, now, normalized_priority, normalized_source),
+                    (
+                        domain,
+                        now,
+                        now,
+                        normalized_priority,
+                        normalized_source,
+                        normalized_pool_id,
+                    ),
                 )
                 queued += 1
                 continue
@@ -502,7 +667,9 @@ def staging_enqueue_detailed(
                     """
                     UPDATE staging_domains
                     SET priority = MAX(priority, ?),
-                        source = CASE WHEN ? >= priority AND ? != '' THEN ? ELSE source END
+                        source = CASE WHEN ? >= priority AND ? != '' THEN ? ELSE source END,
+                        pool_id = CASE WHEN ? >= priority THEN ? ELSE pool_id END,
+                        available_at = 0
                     WHERE domain = ?
                     """,
                     (
@@ -510,6 +677,8 @@ def staging_enqueue_detailed(
                         normalized_priority,
                         normalized_source,
                         normalized_source,
+                        normalized_priority,
+                        normalized_pool_id,
                         domain,
                     ),
                 )
@@ -522,7 +691,8 @@ def staging_enqueue_detailed(
                     UPDATE staging_domains
                     SET state = 'queued', attempts = 0, updated_at = ?, last_error = '',
                         priority = MAX(priority, ?),
-                        source = CASE WHEN ? != '' THEN ? ELSE source END
+                        source = CASE WHEN ? != '' THEN ? ELSE source END,
+                        pool_id = ?, available_at = 0
                     WHERE domain = ?
                     """,
                     (
@@ -530,6 +700,7 @@ def staging_enqueue_detailed(
                         normalized_priority,
                         normalized_source,
                         normalized_source,
+                        normalized_pool_id,
                         domain,
                     ),
                 )
@@ -553,11 +724,13 @@ def staging_enqueue(
     *,
     priority: int = 0,
     source: str = "",
+    pool_id: str = "",
 ) -> int:
     result = staging_enqueue_detailed(
         domains,
         priority=priority,
         source=source,
+        pool_id=pool_id,
     )
     return result.queued + result.requeued
 
@@ -567,6 +740,7 @@ def queue_domains_for_review(domains: Iterable[str], *, source: str) -> QueueEnq
         domains,
         priority=100,
         source=source,
+        pool_id="realtime",
         requeue_existing=True,
     )
 
@@ -587,9 +761,22 @@ def queue_domains_needing_analysis(domains: Iterable[str], *, force: bool = Fals
             if lock is not None:
                 continue
             row = connection.execute(
-                "SELECT last_classified_at, next_recheck_at FROM domains WHERE domain = ?",
-                (domain,),
+                """
+                SELECT d.last_classified_at, d.next_recheck_at,
+                       EXISTS(
+                           SELECT 1
+                           FROM classification_runs c
+                           WHERE c.domain = d.domain
+                             AND c.is_primary = 0
+                             AND c.expires_at > ?
+                       ) AS has_recent_comparison
+                FROM domains d
+                WHERE d.domain = ?
+                """,
+                (now, domain),
             ).fetchone()
+            if row and int(row["has_recent_comparison"] or 0):
+                continue
             if (
                 not row
                 or row["last_classified_at"] is None
@@ -600,6 +787,7 @@ def queue_domains_needing_analysis(domains: Iterable[str], *, force: bool = Fals
         candidates,
         priority=100 if force else 0,
         source="manual" if force else "live_query",
+        pool_id="realtime" if force else "background",
     )
 
 
@@ -621,20 +809,34 @@ def queue_due_rechecks(limit: int = 500) -> int:
         (str(row["domain"]) for row in rows),
         priority=10,
         source="scheduled_recheck",
+        pool_id="background",
     )
 
 
-def staging_ready(trigger_size: int, max_wait_sec: int) -> bool:
+def staging_ready(
+    trigger_size: int,
+    max_wait_sec: int,
+    *,
+    pool_id: str | None = None,
+) -> bool:
     now = int(time.time())
+    normalized_pool = str(pool_id or "").strip().lower()
+    pool_clause = ""
+    parameters: tuple[Any, ...] = ()
+    if normalized_pool in {"realtime", "background"}:
+        pool_clause = "AND pool_id = ?"
+        parameters = (normalized_pool,)
     with _DB_LOCK, _connection() as connection:
         row = connection.execute(
-            """
+            f"""
             SELECT COUNT(*) AS queued_count,
                    MIN(created_at) AS oldest_created_at,
                    MAX(priority) AS highest_priority
             FROM staging_domains
-            WHERE state = 'queued'
-            """
+            WHERE state = 'queued' AND available_at <= ?
+            {pool_clause}
+            """,
+            (now, *parameters),
         ).fetchone()
     queued_count = int(row["queued_count"] or 0)
     if queued_count == 0:
@@ -647,20 +849,32 @@ def staging_ready(trigger_size: int, max_wait_sec: int) -> bool:
     return now - oldest >= max(1, int(max_wait_sec))
 
 
-def staging_claim_items(limit: int = 100) -> list[dict[str, Any]]:
+def staging_claim_items(
+    limit: int = 100,
+    *,
+    pool_id: str | None = None,
+) -> list[dict[str, Any]]:
     limit = max(1, int(limit))
     now = int(time.time())
+    normalized_pool = str(pool_id or "").strip().lower()
+    pool_clause = ""
+    parameters: list[Any] = [now]
+    if normalized_pool in {"realtime", "background"}:
+        pool_clause = "AND pool_id = ?"
+        parameters.append(normalized_pool)
+    parameters.append(limit)
     with _DB_LOCK, _connection() as connection:
         connection.execute("BEGIN IMMEDIATE")
         rows = connection.execute(
-            """
-            SELECT domain, source, priority, attempts, created_at
+            f"""
+            SELECT domain, source, priority, attempts, created_at, pool_id
             FROM staging_domains
-            WHERE state = 'queued'
+            WHERE state = 'queued' AND available_at <= ?
+            {pool_clause}
             ORDER BY priority DESC, created_at, domain
             LIMIT ?
             """,
-            (limit,),
+            tuple(parameters),
         ).fetchall()
         items = [dict(row) for row in rows]
         domains = [str(row["domain"]) for row in rows]
@@ -677,8 +891,8 @@ def staging_claim_items(limit: int = 100) -> list[dict[str, Any]]:
     return items
 
 
-def staging_claim(limit: int = 100) -> list[str]:
-    return [str(item["domain"]) for item in staging_claim_items(limit)]
+def staging_claim(limit: int = 100, *, pool_id: str | None = None) -> list[str]:
+    return [str(item["domain"]) for item in staging_claim_items(limit, pool_id=pool_id)]
 
 
 def staging_ack(domain: str) -> None:
@@ -713,23 +927,46 @@ def staging_fail(domain: str, error: str, max_attempts: int = 3) -> None:
         connection.execute(
             """
             UPDATE staging_domains
-            SET state = ?, updated_at = ?, last_error = ?
+            SET state = ?, updated_at = ?, last_error = ?, available_at = 0
             WHERE domain = ?
             """,
             (state, now, error[:1000], normalized),
         )
 
 
-def staging_requeue_processing() -> int:
+def staging_defer(domain: str, error: str, retry_at: float) -> None:
+    normalized = _normalize_domain(domain)
     now = int(time.time())
+    available_at = max(now + 1, int(retry_at))
     with _DB_LOCK, _connection() as connection:
-        cursor = connection.execute(
+        connection.execute(
             """
             UPDATE staging_domains
-            SET state = 'queued', updated_at = ?
-            WHERE state = 'processing'
+            SET state = 'queued', attempts = MAX(0, attempts - 1),
+                updated_at = ?, last_error = ?, available_at = ?
+            WHERE domain = ?
             """,
-            (now,),
+            (now, error[:1000], available_at, normalized),
+        )
+
+
+def staging_requeue_processing(*, pool_id: str | None = None) -> int:
+    now = int(time.time())
+    normalized_pool = str(pool_id or "").strip().lower()
+    pool_clause = ""
+    parameters: tuple[Any, ...] = (now,)
+    if normalized_pool in {"realtime", "background"}:
+        pool_clause = "AND pool_id = ?"
+        parameters = (now, normalized_pool)
+    with _DB_LOCK, _connection() as connection:
+        cursor = connection.execute(
+            f"""
+            UPDATE staging_domains
+            SET state = 'queued', updated_at = ?, available_at = 0
+            WHERE state = 'processing'
+            {pool_clause}
+            """,
+            parameters,
         )
     return cursor.rowcount
 
@@ -739,7 +976,7 @@ def staging_list(limit: int = 200) -> list[dict[str, Any]]:
         rows = connection.execute(
             """
             SELECT domain, state, attempts, created_at, updated_at, last_error,
-                   priority, source
+                   priority, source, pool_id, available_at
             FROM staging_domains
             ORDER BY priority DESC, created_at, domain
             LIMIT ?
@@ -767,7 +1004,11 @@ def domains_without_classification(domains: Iterable[str]) -> set[str]:
     placeholders = ",".join("?" for _ in normalized)
     with _DB_LOCK, _connection() as connection:
         rows = connection.execute(
-            f"SELECT DISTINCT domain FROM classification_runs WHERE domain IN ({placeholders})",
+            f"""
+            SELECT DISTINCT domain
+            FROM classification_runs
+            WHERE is_primary = 1 AND domain IN ({placeholders})
+            """,
             tuple(sorted(normalized)),
         ).fetchall()
     classified = {str(row["domain"]) for row in rows}

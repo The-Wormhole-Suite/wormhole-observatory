@@ -11,6 +11,7 @@ requires-python = ">=3.11"
 dependencies = [
   "requests>=2.31,<3",
   "dnspython>=2.6,<3",
+  "cryptography>=48.0.1,<49",
 ]
 
 [project.optional-dependencies]
@@ -27,6 +28,9 @@ pihole-manager = "pihole_manager.__main__:main"
 
 [tool.setuptools.packages.find]
 include = ["pihole_manager*", "pihole6api*"]
+
+[tool.setuptools.package-data]
+pihole_manager = ["data/*.json", "data/*.pem"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

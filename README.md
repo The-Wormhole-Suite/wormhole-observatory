@@ -13,7 +13,8 @@ Early alpha. Enable **Simulation mode** for the first live test so the complete 
 3. Fresh cached research findings are loaded separately for every source.
 4. Enabled research sources run in parallel with each other, while requests remain serial within
    each source. A source is contacted only when its own evidence is missing or expired.
-5. A structured domain dossier is sent through the selected provider adapter.
+5. The realtime or background analysis pool freezes the dossier and dispatches it according to
+   its configured provider strategy.
 6. The LLM returns tags, service attribution, risks, confidence, description, and a recommendation.
 7. The response is validated against a fixed schema.
 8. A deterministic policy engine decides whether an automatic Pi-hole action is safe.
@@ -25,9 +26,11 @@ The LLM interprets evidence. It is not allowed to bypass the safety and policy l
 ## Background workers
 
 - **Query collector:** reads live queries, aggregates observations, and queues unseen or stale domains.
-- **Analysis worker:** processes manual jobs, live-query jobs, and scheduled rechecks. It refreshes
-  enabled research sources in source-specific queues, sends up to the configured number of domains
-  in one LLM request, stores history, and evaluates policies.
+- **Realtime analysis worker:** processes interactive and manually queued work independently from
+  slower background batches.
+- **Background analysis worker:** processes collected domains and scheduled rechecks. Both workers
+  refresh enabled evidence, use token-aware batches, store immutable provider runs, and evaluate
+  policies only for primary results.
 
 Automatic query jobs start when the configured queue threshold is reached or the oldest job has waited long enough. Manually queued jobs bypass that threshold. Pending, processing, and failed analysis jobs are visible immediately in Review Queue, including their source and current state.
 
@@ -35,6 +38,12 @@ LLM and evidence-provider requests honor `Retry-After` and common rate-limit res
 Transient 408, 429, 500, 502, 503, and 504 responses use bounded adaptive backoff. Authentication
 and other non-transient errors are not retried, and a rate-limited request never triggers additional
 structured-output fallback calls.
+
+LLM quota is reserved atomically in SQLite immediately before every HTTP attempt. Estimated token
+usage is reconciled with response usage, and live quota headers take precedence over configured or
+registry values. Background work cannot consume the configured realtime reserve. A quota-delayed
+queue item is made available at the calculated reset time rather than being reclaimed in a tight
+loop.
 
 ## Tags and policies
 
@@ -89,7 +98,29 @@ An optional idle history backfill can inspect older query pages after the live c
 
 ## Settings behavior
 
-Settings pages scroll vertically when their content does not fit in the available window. Application, automation, provider, prompt-profile, and evidence-source changes are saved automatically after validation. Pi-hole connection values remain explicit: **Save + Test** stores the base URL, password, timeout, and TLS setting before testing the saved connection. Optional help icons can be disabled globally from the Application page.
+Settings pages scroll vertically when their content does not fit in the available window. Application, automation, provider, analysis-pool, prompt-profile, and evidence-source changes are saved automatically after validation. Pi-hole connection values remain explicit: **Save + Test** stores the base URL, password, timeout, and TLS setting before testing the saved connection. Optional help icons can be disabled globally from the Application page.
+
+## Analysis pools and provider limits
+
+Realtime and background analysis have independent provider memberships, prompt profiles, and
+maximum parallelism. Each pool supports:
+
+- **Distribute:** deterministically assigns every domain to exactly one weighted provider.
+- **Fallback:** tries the next provider only for quota, cooldown, connection, timeout, or transient
+  service failures. Invalid model output does not multiply requests.
+- **Compare:** sends the same frozen dossier to every selected provider and stores results
+  side-by-side without updating the current classification or Pi-hole.
+- **Verify:** sends selected high-risk, sampled, or automation-eligible primary results to an
+  independent provider. A material disagreement forces manual review and prevents automatic action.
+
+The Analysis Pools settings page also runs a one-domain benchmark across selected providers using
+one identical dossier. Results include model, status, latency, policy, and category.
+
+Provider limit modes are **Auto**, **Auto with own caps**, and **Manual**. Resolution priority is:
+user caps, live response headers, a verified online registry, the bundled registry, then
+conservative limits for an unknown remote provider. Shared account quotas can be linked through a
+quota group. Context size, calibrated output usage, safety reserve, and provider-specific maximums
+determine the actual domains per request.
 
 ## Structured evidence and privacy
 
@@ -162,13 +193,37 @@ group. The LLM Providers settings page includes verified presets for major direc
 services, and local runtimes:
 
 - OpenAI, Anthropic Claude, Google Gemini, xAI, DeepSeek, and Mistral
-- GroqCloud, OpenRouter, Perplexity, Together AI, Fireworks AI, Cohere, Cerebras, SambaNova, and Hugging Face Inference Providers
+- GroqCloud, Cloudflare Workers AI, OpenRouter, Perplexity, Together AI, Fireworks AI, Cohere,
+  Cerebras, SambaNova, and Hugging Face Inference Providers
 - Ollama, LM Studio, llama.cpp, LocalAI, vLLM, and LiteLLM
 
-Dedicated free-tier presets are included for Cerebras GPT OSS 120B, Groq GPT OSS 120B, and
-OpenRouter's free-model router. Adding one applies a conservative batch size, request interval, and
-retry count. Runtime server headers still override the preset delay when a provider reports a
-longer cooldown.
+Dedicated free-tier presets are included for Groq GPT OSS 120B, Gemini 3.6 Flash, OpenRouter's
+free-model router, and Cloudflare Workers AI with Qwen3 30B, GPT OSS 20B, or GPT OSS 120B.
+Cerebras is labeled as a time-limited trial rather than a permanent free tier. GitHub Models is not
+offered because the service was retired. Adding a preset applies a conservative request profile;
+runtime headers and the quota manager remain authoritative.
+
+A practical free-tier starting point is Groq GPT OSS 120B as the realtime primary, Gemini as an
+alternative, and OpenRouter Free as the last fallback. For background distribution, use Cloudflare
+Workers AI with Qwen3 30B or GPT OSS 20B; select GPT OSS 120B when result quality matters more than
+neuron consumption. Cerebras should only be added while its trial is active. Provider credentials
+and Cloudflare account IDs must still be configured before adding these providers to a pool.
+
+The bundled `provider-registry.json` records reviewed capabilities, free-tier status, quota scope,
+and source URLs. A weekly workflow opens or updates a maintenance issue when entries need review.
+Publishing a remote registry is a separate environment-protected workflow: it signs the exact JSON
+with Ed25519 and uploads both `provider-registry.json` and `provider-registry.json.sig`. Runtime
+updates remain disabled until a reviewed public key replaces the placeholder and the matching
+private key is configured as the protected GitHub Actions secret
+`PROVIDER_REGISTRY_ED25519_PRIVATE_KEY`. Generate a pair with:
+
+```bash
+python scripts/provider_registry.py generate-key registry-private.pem \
+  pihole_manager/data/provider_registry_public_key.pem
+```
+
+Store `registry-private.pem` only in the protected secret, never in Git. After that one-time setup,
+enable verified registry updates under Analysis Pools.
 
 Most providers use the OpenAI-compatible Chat Completions transport. Anthropic uses its native Messages API. **Fetch models** queries the provider's live models endpoint when the provider exposes one, so model IDs do not need to remain hard-coded in the application. A custom OpenAI-compatible provider remains available for self-hosted and enterprise gateways.
 

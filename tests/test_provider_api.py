@@ -5,15 +5,19 @@ from typing import Any
 import pytest
 import requests
 
-from pihole_manager.config import LLMProviderOptions
+from pihole_manager.config import LLMOptions, LLMProviderOptions
 from pihole_manager.http_retry import retry_delay_from_headers
 from pihole_manager.provider_api import (
+    ProviderRequestContext,
     chat_url,
     list_provider_models,
     models_url,
+    request_provider,
     request_provider_text,
 )
 from pihole_manager.provider_presets import provider_presets
+from pihole_manager.provider_registry import ProviderLimit, ProviderLimitProfile
+from pihole_manager.quota import QuotaEstimate, QuotaUnavailableError
 
 
 class _Response:
@@ -180,6 +184,73 @@ def test_openai_request_respects_token_and_temperature_settings(monkeypatch) -> 
     assert captured["json"]["max_completion_tokens"] == 777
     assert "max_tokens" not in captured["json"]
     assert "temperature" not in captured["json"]
+
+
+def test_provider_request_reserves_quota_before_http_attempt(monkeypatch, tmp_path) -> None:
+    from pihole_manager import provider_api
+
+    monkeypatch.setenv("PIHOLE_MANAGER_HOME", str(tmp_path))
+    provider_api._RATE_STATES.clear()
+    calls = 0
+
+    def fake_post(_url: str, **_kwargs: Any) -> _Response:
+        nonlocal calls
+        calls += 1
+        return _Response(
+            {
+                "choices": [{"message": {"content": "ok"}}],
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 5,
+                    "total_tokens": 15,
+                },
+            }
+        )
+
+    monkeypatch.setattr(provider_api.requests, "post", fake_post)
+    provider = LLMProviderOptions(
+        provider_id="quota-provider",
+        base_url="https://quota.example/v1",
+        model="model",
+    )
+    profile = ProviderLimitProfile(
+        source="test",
+        limits=(
+            ProviderLimit(
+                metric="requests",
+                amount=1,
+                window_seconds=60,
+                source="test",
+            ),
+        ),
+        safety_margin_percent=0,
+    )
+    context = ProviderRequestContext(
+        pool_id="realtime",
+        profile=profile,
+        llm_options=LLMOptions(
+            min_request_interval_sec=0,
+            max_retries=0,
+            quota_wait_timeout_sec=0,
+            realtime_quota_reserve_percent=0,
+        ),
+        estimate=QuotaEstimate(input_tokens=12, output_tokens=8),
+    )
+
+    result = request_provider(
+        provider,
+        [{"role": "user", "content": "Classify"}],
+        request_context=context,
+    )
+
+    assert result.usage.total_tokens == 15
+    with pytest.raises(QuotaUnavailableError):
+        request_provider(
+            provider,
+            [{"role": "user", "content": "Classify again"}],
+            request_context=context,
+        )
+    assert calls == 1
 
 
 def test_rate_limit_retries_after_server_delay(monkeypatch, tmp_path) -> None:

@@ -5,8 +5,10 @@ import threading
 import tkinter as tk
 from collections.abc import Callable
 from tkinter import messagebox, simpledialog, ttk
+from uuid import uuid4
 
 from pihole_manager.config import LLMProviderOptions, Options
+from pihole_manager.database import provider_health_get
 from pihole_manager.gui.tooltips import TooltipSupport
 from pihole_manager.local_discovery import (
     DiscoveredLocalProvider,
@@ -18,6 +20,7 @@ from pihole_manager.provider_presets import (
     preset_by_name,
     provider_presets,
 )
+from pihole_manager.provider_registry import resolve_provider_limit_profile
 
 
 class ProvidersSettingsPage(TooltipSupport, ttk.Frame):
@@ -76,6 +79,20 @@ class ProvidersSettingsPage(TooltipSupport, ttk.Frame):
         self.max_tokens_parameter = tk.StringVar()
         self.send_temperature = tk.BooleanVar()
         self.structured_output = tk.StringVar()
+        self.limit_mode = tk.StringVar()
+        self.quota_group = tk.StringVar()
+        self.requests_per_minute = tk.StringVar()
+        self.requests_per_hour = tk.StringVar()
+        self.requests_per_day = tk.StringVar()
+        self.input_tokens_per_minute = tk.StringVar()
+        self.output_tokens_per_minute = tk.StringVar()
+        self.tokens_per_minute = tk.StringVar()
+        self.tokens_per_hour = tk.StringVar()
+        self.tokens_per_day = tk.StringVar()
+        self.units_per_day = tk.StringVar()
+        self.context_tokens = tk.StringVar()
+        self.max_domains_per_request = tk.StringVar()
+        self.safety_margin_percent = tk.StringVar()
 
         self._entry(editor, 0, "Name", self.name)
         ttk.Label(editor, text="API style").grid(row=1, column=0, sticky="w", pady=4)
@@ -206,6 +223,56 @@ class ProvidersSettingsPage(TooltipSupport, ttk.Frame):
             pady=(8, 0),
         )
 
+        limits = ttk.LabelFrame(editor, text="Limits and quota discovery", padding=8)
+        limits.grid(row=13, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        limits.columnconfigure(1, weight=1)
+        limits.columnconfigure(3, weight=1)
+        ttk.Label(limits, text="Mode").grid(row=0, column=0, sticky="w", pady=3)
+        ttk.Combobox(
+            limits,
+            textvariable=self.limit_mode,
+            values=("auto", "auto_cap", "manual"),
+            state="readonly",
+            width=18,
+        ).grid(row=0, column=1, sticky="w", padx=(8, 14), pady=3)
+        self.limit_status = ttk.Label(limits, text="", justify="left", wraplength=560)
+        self.limit_status.grid(row=0, column=2, columnspan=2, sticky="ew", pady=3)
+
+        fields = (
+            ("Quota group", self.quota_group),
+            ("Requests / minute", self.requests_per_minute),
+            ("Requests / hour", self.requests_per_hour),
+            ("Requests / day", self.requests_per_day),
+            ("Input tokens / minute", self.input_tokens_per_minute),
+            ("Output tokens / minute", self.output_tokens_per_minute),
+            ("Total tokens / minute", self.tokens_per_minute),
+            ("Total tokens / hour", self.tokens_per_hour),
+            ("Total tokens / day", self.tokens_per_day),
+            ("Units / day", self.units_per_day),
+            ("Context tokens", self.context_tokens),
+            ("Max domains / request", self.max_domains_per_request),
+            ("Safety reserve (%)", self.safety_margin_percent),
+        )
+        for index, (label, variable) in enumerate(fields):
+            column = 0 if index % 2 == 0 else 2
+            row = 1 + index // 2
+            ttk.Label(limits, text=label).grid(row=row, column=column, sticky="w", pady=3)
+            ttk.Entry(limits, textvariable=variable, width=18).grid(
+                row=row,
+                column=column + 1,
+                sticky="ew",
+                padx=(8, 14 if column == 0 else 0),
+                pady=3,
+            )
+        self._info_button(
+            limits,
+            "Limit modes",
+            "Auto uses a signed live registry when available, then the bundled registry, and "
+            "finally conservative limits for unknown remote providers. Auto with own caps "
+            "never exceeds your values. Manual uses only your values. Live response headers "
+            "always take precedence when they expose a stricter remaining quota.",
+        ).grid(row=7, column=2, sticky="w", pady=(6, 0))
+
     def _entry(
         self,
         parent: ttk.LabelFrame,
@@ -282,6 +349,21 @@ class ProvidersSettingsPage(TooltipSupport, ttk.Frame):
         self.max_tokens_parameter.set(provider.max_tokens_parameter)
         self.send_temperature.set(provider.send_temperature)
         self.structured_output.set(provider.structured_output)
+        limits = provider.limits
+        self.limit_mode.set(limits.mode)
+        self.quota_group.set(limits.quota_group)
+        self.requests_per_minute.set(str(limits.requests_per_minute))
+        self.requests_per_hour.set(str(limits.requests_per_hour))
+        self.requests_per_day.set(str(limits.requests_per_day))
+        self.input_tokens_per_minute.set(str(limits.input_tokens_per_minute))
+        self.output_tokens_per_minute.set(str(limits.output_tokens_per_minute))
+        self.tokens_per_minute.set(str(limits.tokens_per_minute))
+        self.tokens_per_hour.set(str(limits.tokens_per_hour))
+        self.tokens_per_day.set(str(limits.tokens_per_day))
+        self.units_per_day.set(str(limits.units_per_day))
+        self.context_tokens.set(str(limits.context_tokens))
+        self.max_domains_per_request.set(str(limits.max_domains_per_request))
+        self.safety_margin_percent.set(str(limits.safety_margin_percent))
         self.model_box.configure(values=())
         preset = preset_by_id(provider.preset_id)
         note = preset.notes if preset and preset.notes else "Custom provider configuration."
@@ -293,6 +375,7 @@ class ProvidersSettingsPage(TooltipSupport, ttk.Frame):
         )
         self._api_style_changed()
         self._update_api_key_requirement(provider)
+        self._update_limit_status(provider)
 
     def _store_current(self) -> bool:
         assert self.options is not None
@@ -300,10 +383,24 @@ class ProvidersSettingsPage(TooltipSupport, ttk.Frame):
             temperature = float(self.temperature.get())
             timeout = max(1.0, float(self.timeout.get()))
             max_output_tokens = max(1, int(self.max_output_tokens.get()))
+            limit_values = {
+                "requests_per_minute": int(self.requests_per_minute.get()),
+                "requests_per_hour": int(self.requests_per_hour.get()),
+                "requests_per_day": int(self.requests_per_day.get()),
+                "input_tokens_per_minute": int(self.input_tokens_per_minute.get()),
+                "output_tokens_per_minute": int(self.output_tokens_per_minute.get()),
+                "tokens_per_minute": int(self.tokens_per_minute.get()),
+                "tokens_per_hour": int(self.tokens_per_hour.get()),
+                "tokens_per_day": int(self.tokens_per_day.get()),
+                "units_per_day": float(self.units_per_day.get()),
+                "context_tokens": int(self.context_tokens.get()),
+                "max_domains_per_request": int(self.max_domains_per_request.get()),
+                "safety_margin_percent": float(self.safety_margin_percent.get()),
+            }
         except ValueError:
             messagebox.showerror(
                 "Provider",
-                "Temperature, timeout, and max output tokens must be numbers.",
+                "Provider settings and quota limits must be numbers.",
             )
             return False
         provider = self.options.llm_providers[self.index]
@@ -321,11 +418,29 @@ class ProvidersSettingsPage(TooltipSupport, ttk.Frame):
         if provider.api_style == "anthropic_messages":
             provider.structured_output = "prompt_only"
             self.structured_output.set("prompt_only")
+        provider.limits.mode = self.limit_mode.get().strip() or "auto"
+        provider.limits.quota_group = self.quota_group.get().strip()
+        for field_name, value in limit_values.items():
+            setattr(provider.limits, field_name, value)
         self.listbox.delete(self.index)
         marker = "● " if self.index == self.options.llm.active_provider_index else ""
         self.listbox.insert(self.index, marker + provider.name)
         self._select_index(self.index)
+        self._update_limit_status(provider)
         return True
+
+    def _update_limit_status(self, provider: LLMProviderOptions) -> None:
+        try:
+            profile = resolve_provider_limit_profile(provider)
+            health = provider_health_get(provider.provider_id)
+            summary = (
+                f"Source: {profile.source} · tier: {profile.free_tier} · health: {health.state}"
+            )
+            if profile.free_tier_note:
+                summary += f"\n{profile.free_tier_note}"
+        except Exception as exc:
+            summary = f"Limit status unavailable: {exc}"
+        self.limit_status.configure(text=summary)
 
     def _selected(self, _event: tk.Event | None = None) -> None:
         if self.options is None:
@@ -415,6 +530,7 @@ class ProvidersSettingsPage(TooltipSupport, ttk.Frame):
         if not self._store_current():
             return
         duplicate = copy.deepcopy(self.options.llm_providers[self.index])
+        duplicate.provider_id = f"provider-{uuid4().hex}"
         duplicate.name = f"{duplicate.name} (copy)"
         duplicate.preset_id = "custom"
         self.options.llm_providers.insert(self.index + 1, duplicate)
@@ -426,7 +542,14 @@ class ProvidersSettingsPage(TooltipSupport, ttk.Frame):
         if len(self.options.llm_providers) <= 1:
             messagebox.showwarning("Provider", "At least one provider must remain.")
             return
+        removed_id = self.options.llm_providers[self.index].provider_id
         del self.options.llm_providers[self.index]
+        for pool in self.options.analysis_pools:
+            pool.memberships = [
+                membership
+                for membership in pool.memberships
+                if membership.provider_id != removed_id
+            ]
         self._reload(min(self.index, len(self.options.llm_providers) - 1))
         self._changed()
 

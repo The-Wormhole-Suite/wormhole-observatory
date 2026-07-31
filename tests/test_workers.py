@@ -120,3 +120,72 @@ def test_manual_queue_source_forces_review(monkeypatch, tmp_path) -> None:
     assert rows[0]["domain"] == "manual.example"
     assert rows[0]["review_reason"] == "Manually queued for review."
     assert rows[0]["planned_action"] == ""
+
+
+def test_compare_result_is_history_only(monkeypatch, tmp_path) -> None:
+    from pihole_manager import workers
+    from pihole_manager.analysis_dispatcher import (
+        AnalysisDispatchResult,
+        ProviderAnalysisResult,
+    )
+    from pihole_manager.config import load_options
+    from pihole_manager.database import (
+        classification_history,
+        domains_without_classification,
+        init_db,
+        review_get,
+    )
+    from pihole_manager.models import Classification, Policy, ProviderUsage
+
+    monkeypatch.setenv("PIHOLE_MANAGER_HOME", str(tmp_path))
+    options = load_options()
+    provider = options.llm_providers[0]
+    provider.base_url = "https://provider.example/v1"
+    provider.model = "model"
+    init_db()
+    classification = Classification(
+        domain="compare.example",
+        policy=Policy.DENY,
+        category="advertising",
+        tags=("advertising",),
+        short="Comparison",
+        details="History only",
+        provider=provider.name,
+        confidence=0.99,
+        needs_review=False,
+    )
+    result = AnalysisDispatchResult(
+        run_id="compare-run",
+        pool_id="background",
+        mode="compare",
+        dossier_hash="hash",
+        provider_results=(
+            ProviderAnalysisResult(
+                provider_id=provider.provider_id,
+                provider_name=provider.name,
+                model=provider.model,
+                profile_name=options.prompt_profiles[0].name,
+                limit_source="test",
+                classifications=(classification,),
+                latency_ms=10,
+                usage=ProviderUsage(input_tokens=8, output_tokens=4, total_tokens=12),
+                is_primary=False,
+            ),
+        ),
+    )
+
+    completed = workers.Classifier()._handle_dispatch_result(
+        result,
+        [{"domain": "compare.example"}],
+        queue_sources={},
+        options=options,
+    )
+
+    assert completed == {"compare.example"}
+    assert review_get() == []
+    history = classification_history("compare.example")
+    assert len(history) == 1
+    assert history[0]["is_primary"] == 0
+    assert history[0]["provider_id"] == provider.provider_id
+    assert domains_without_classification(["compare.example"]) == {"compare.example"}
+    assert workers.queue_domains_needing_analysis(["compare.example"]) == 0

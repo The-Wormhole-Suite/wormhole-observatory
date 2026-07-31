@@ -48,6 +48,22 @@ _PRESETS = (
         structured_output="json_schema",
     ),
     ProviderPreset(
+        "google_gemini_free",
+        "Google Gemini Free (3.6 Flash)",
+        "openai_compatible",
+        "https://generativelanguage.googleapis.com/v1beta/openai",
+        "gemini-3.6-flash",
+        structured_output="json_schema",
+        notes=(
+            "Free-tier limits are project-specific and shown in Google AI Studio. "
+            "Live limits take precedence over the bundled capability profile."
+        ),
+        recommended_worker_batch_size=20,
+        recommended_domains_per_request=10,
+        recommended_min_request_interval_sec=4.0,
+        recommended_max_retries=2,
+    ),
+    ProviderPreset(
         "xai",
         "xAI Grok",
         "openai_compatible",
@@ -91,6 +107,54 @@ _PRESETS = (
         recommended_worker_batch_size=12,
         recommended_domains_per_request=4,
         recommended_min_request_interval_sec=2.1,
+        recommended_max_retries=2,
+    ),
+    ProviderPreset(
+        "cloudflare_workers_ai_qwen_free",
+        "Cloudflare Workers AI Free (Qwen3 30B)",
+        "openai_compatible",
+        "https://api.cloudflare.com/client/v4/accounts/ACCOUNT_ID/ai/v1",
+        "@cf/qwen/qwen3-30b-a3b-fp8",
+        structured_output="prompt_only",
+        notes=(
+            "Replace ACCOUNT_ID in the base URL. The shared free allocation is 10,000 "
+            "neurons per Cloudflare account and resets at 00:00 UTC."
+        ),
+        recommended_worker_batch_size=20,
+        recommended_domains_per_request=8,
+        recommended_min_request_interval_sec=1.0,
+        recommended_max_retries=2,
+    ),
+    ProviderPreset(
+        "cloudflare_workers_ai_gpt_oss_20b_free",
+        "Cloudflare Workers AI Free (GPT OSS 20B)",
+        "openai_compatible",
+        "https://api.cloudflare.com/client/v4/accounts/ACCOUNT_ID/ai/v1",
+        "@cf/openai/gpt-oss-20b",
+        structured_output="prompt_only",
+        notes=(
+            "Replace ACCOUNT_ID in the base URL. The shared free allocation is 10,000 "
+            "neurons per Cloudflare account and resets at 00:00 UTC."
+        ),
+        recommended_worker_batch_size=20,
+        recommended_domains_per_request=8,
+        recommended_min_request_interval_sec=1.0,
+        recommended_max_retries=2,
+    ),
+    ProviderPreset(
+        "cloudflare_workers_ai_gpt_oss_free",
+        "Cloudflare Workers AI Free (GPT OSS 120B)",
+        "openai_compatible",
+        "https://api.cloudflare.com/client/v4/accounts/ACCOUNT_ID/ai/v1",
+        "@cf/openai/gpt-oss-120b",
+        structured_output="prompt_only",
+        notes=(
+            "Replace ACCOUNT_ID in the base URL. The shared free allocation is 10,000 "
+            "neurons per Cloudflare account and resets at 00:00 UTC."
+        ),
+        recommended_worker_batch_size=12,
+        recommended_domains_per_request=4,
+        recommended_min_request_interval_sec=1.0,
         recommended_max_retries=2,
     ),
     ProviderPreset(
@@ -155,14 +219,14 @@ _PRESETS = (
     ),
     ProviderPreset(
         "cerebras_free_gpt_oss",
-        "Cerebras Free (GPT OSS 120B)",
+        "Cerebras Trial (GPT OSS 120B)",
         "openai_compatible",
         "https://api.cerebras.ai/v1",
         "gpt-oss-120b",
         structured_output="prompt_only",
         notes=(
-            "Conservative settings for the Cerebras free trial. Current account limits and server "
-            "retry headers take precedence."
+            "Cerebras currently offers a time-limited trial rather than a permanent free tier. "
+            "Current account limits and server retry headers take precedence."
         ),
         recommended_worker_batch_size=20,
         recommended_domains_per_request=10,

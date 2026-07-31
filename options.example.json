@@ -1,5 +1,5 @@
 {
-  "schema_version": 16,
+  "schema_version": 17,
   "logging": {
     "enabled": true,
     "level": "INFO",
@@ -41,6 +41,10 @@
     "domains_per_request": 10,
     "min_request_interval_sec": 1.0,
     "max_retries": 2,
+    "realtime_quota_reserve_percent": 20.0,
+    "quota_wait_timeout_sec": 30.0,
+    "unknown_remote_requests_per_minute": 2,
+    "unknown_remote_max_domains_per_request": 1,
     "active_provider_index": 0,
     "active_profile_index": 0,
     "automation_mode": "hybrid",
@@ -119,8 +123,16 @@
     "check_interval_hours": 24,
     "last_check_at": 0
   },
+  "provider_registry": {
+    "auto_update": false,
+    "refresh_interval_hours": 168,
+    "last_checked_at": 0,
+    "registry_url": "https://github.com/HyperCriSiS/Pi-Hole-Manager/releases/latest/download/provider-registry.json",
+    "signature_url": "https://github.com/HyperCriSiS/Pi-Hole-Manager/releases/latest/download/provider-registry.json.sig"
+  },
   "llm_providers": [
     {
+      "provider_id": "provider-example",
       "name": "Custom OpenAI-compatible",
       "preset_id": "custom",
       "api_style": "openai_compatible",
@@ -132,7 +144,67 @@
       "max_output_tokens": 4096,
       "max_tokens_parameter": "max_tokens",
       "send_temperature": true,
-      "structured_output": "auto"
+      "structured_output": "auto",
+      "limits": {
+        "mode": "auto",
+        "quota_group": "",
+        "requests_per_minute": 0,
+        "requests_per_hour": 0,
+        "requests_per_day": 0,
+        "input_tokens_per_minute": 0,
+        "output_tokens_per_minute": 0,
+        "tokens_per_minute": 0,
+        "tokens_per_hour": 0,
+        "tokens_per_day": 0,
+        "units_per_day": 0.0,
+        "context_tokens": 0,
+        "max_domains_per_request": 0,
+        "safety_margin_percent": 10.0
+      }
+    }
+  ],
+  "analysis_pools": [
+    {
+      "pool_id": "realtime",
+      "name": "Realtime analysis",
+      "enabled": true,
+      "mode": "fallback",
+      "profile_index": 0,
+      "max_parallel_requests": 2,
+      "verification_sample_percent": 10,
+      "verify_automatic_actions": true,
+      "verify_security_risk_at_least": 80,
+      "verify_breakage_risk_at_least": 50,
+      "memberships": [
+        {
+          "provider_id": "provider-example",
+          "enabled": true,
+          "role": "primary",
+          "priority": 100,
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "pool_id": "background",
+      "name": "Background analysis",
+      "enabled": true,
+      "mode": "distribute",
+      "profile_index": 0,
+      "max_parallel_requests": 2,
+      "verification_sample_percent": 10,
+      "verify_automatic_actions": true,
+      "verify_security_risk_at_least": 80,
+      "verify_breakage_risk_at_least": 50,
+      "memberships": [
+        {
+          "provider_id": "provider-example",
+          "enabled": true,
+          "role": "primary",
+          "priority": 100,
+          "weight": 1
+        }
+      ]
     }
   ],
   "prompt_profiles": [
