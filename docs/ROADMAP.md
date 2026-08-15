@@ -2,7 +2,7 @@
 
 ## Priority 1: Stability and migration
 
-- versioned SQLite migrations with rollback tests
+- [x] versioned SQLite migrations with rollback tests
 - operating-system credential stores
 - integration tests against multiple Pi-hole v6 minor versions
 - connection health state and clearer offline behavior
