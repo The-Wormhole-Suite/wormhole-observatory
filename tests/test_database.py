@@ -366,61 +366,378 @@ def test_research_signal_metadata_round_trips(monkeypatch, tmp_path) -> None:
                 domain="ioc.example",
                 provider="Threat source",
                 kind="ioc_database",
-                title="Known tracker",
-                summary="Listed by a threat source",
-                source_url="https://example.invalid/ioc",
-                confidence=0.9,
+                title="Confirmed IOC",
+                summary="Exact match",
+                signal_type="security",
+                verdict="command_and_control",
+                decision_relevant=True,
+                confidence=0.99,
                 retrieved_at=now,
                 expires_at=now + 3600,
-                raw={"listed": True},
-                signal_type="reputation",
-                verdict="deny",
-                decision_relevant=True,
             )
         ]
     )
 
-    rows = research_findings_get("ioc.example")
-    assert rows[0]["signal_type"] == "reputation"
-    assert rows[0]["verdict"] == "deny"
-    assert rows[0]["decision_relevant"] is True
-    assert rows[0]["raw"]["listed"] is True
+    finding = research_findings_get("ioc.example")[0]
+    assert finding["signal_type"] == "security"
+    assert finding["verdict"] == "command_and_control"
+    assert finding["decision_relevant"] == 1
 
 
-def test_analysis_and_benchmark_round_trip(monkeypatch, tmp_path) -> None:
+def test_simulated_action_can_be_applied_later(monkeypatch, tmp_path) -> None:
     from pihole_manager.database import (
-        analysis_run_create,
-        analysis_run_get,
-        analysis_run_update,
-        benchmark_run_create,
-        benchmark_run_get,
-        benchmark_run_save_result,
-        benchmark_run_update,
+        classification_history,
+        domain_browser_search,
+        mark_action_applied,
+        review_get,
+        save_classification_run,
+    )
+    from pihole_manager.models import Classification, Policy, ServiceRole
+
+    monkeypatch.setenv("PIHOLE_MANAGER_HOME", str(tmp_path))
+    init_db()
+    classification = Classification(
+        domain="ads.example.com",
+        policy=Policy.DENY,
+        category="advertising",
+        tags=("advertising",),
+        service="Example Ads",
+        service_role=ServiceRole.OPTIONAL,
+        privacy_risk=90,
+        security_risk=5,
+        breakage_risk=10,
+        confidence=0.99,
+        needs_review=False,
+        review_reason="",
+        recheck_after_days=30,
+        short="Advertising endpoint",
+        details="Used for advertising.",
+        provider="test provider",
+        raw_text="{}",
+    )
+
+    save_classification_run(
+        classification,
+        status="simulation_deny",
+        planned_action="deny",
+        action_status="simulated",
+    )
+
+    review = review_get(needs_review=True)[0]
+    assert review["planned_action"] == "deny"
+    assert review["action_status"] == "simulated"
+    assert review["needs_review"] is True
+
+    rows, total = domain_browser_search(search="ads.example.com")
+    assert total == 1
+    assert rows[0]["planned_action"] == "deny"
+    assert rows[0]["action_status"] == "simulated"
+
+    history = classification_history("ads.example.com")
+    assert history[0]["planned_action"] == "deny"
+    assert history[0]["action_status"] == "simulated"
+
+    mark_action_applied("ads.example.com", "deny")
+    review = review_get()[0]
+    assert review["action_status"] == "applied"
+    assert review["needs_review"] is False
+
+
+def test_manual_review_queue_reports_pending_and_requeues_failed(monkeypatch, tmp_path) -> None:
+    from pihole_manager.database import queue_domains_for_review
+
+    monkeypatch.setenv("PIHOLE_MANAGER_HOME", str(tmp_path))
+    init_db()
+
+    first = queue_domains_for_review(["Example.COM", "example.com"], source="test")
+    assert first.requested == 1
+    assert first.queued == 1
+    assert first.accepted == 1
+
+    second = queue_domains_for_review(["example.com"], source="test")
+    assert second.already_pending == 1
+    assert second.accepted == 1
+
+    staging_claim(1)
+    staging_fail("example.com", "failed", max_attempts=1)
+    third = queue_domains_for_review(["example.com"], source="test")
+    assert third.requeued == 1
+    assert staging_list()[0]["state"] == "queued"
+
+
+def test_domains_without_classification(monkeypatch, tmp_path) -> None:
+    from pihole_manager.database import (
+        domains_without_classification,
+        save_classification_run,
+    )
+    from pihole_manager.models import Classification, Policy, ServiceRole
+
+    monkeypatch.setenv("PIHOLE_MANAGER_HOME", str(tmp_path))
+    init_db()
+    save_classification_run(
+        Classification(
+            domain="classified.example",
+            policy=Policy.MANUAL_REVIEW,
+            category="unknown",
+            tags=("unknown",),
+            service="",
+            service_role=ServiceRole.UNKNOWN,
+            privacy_risk=0,
+            security_risk=0,
+            breakage_risk=0,
+            confidence=0.5,
+            needs_review=True,
+            review_reason="Unknown",
+            recheck_after_days=3,
+            short="Unknown domain",
+            details="",
+            provider="test",
+            raw_text="{}",
+        )
+    )
+
+    assert domains_without_classification(["classified.example", "new.example"]) == {"new.example"}
+
+
+def test_review_queue_includes_pending_analysis_items(monkeypatch, tmp_path) -> None:
+    from pihole_manager.database import (
+        queue_domains_for_review,
+        review_queue_get,
+        staging_remove,
     )
 
     monkeypatch.setenv("PIHOLE_MANAGER_HOME", str(tmp_path))
     init_db()
 
-    analysis_run_create("run-1", "background", "single", source="test", dossier_hash="hash")
-    analysis_run_update("run-1", status="completed")
-    analysis = analysis_run_get("run-1")
-    assert analysis is not None
-    assert analysis["status"] == "completed"
-
-    benchmark_run_create("bench-1", "example.com", "balanced", "prompt-hash")
-    benchmark_run_save_result(
-        "bench-1",
-        provider_id="provider-1",
-        provider_name="Provider 1",
-        model="model-1",
-        status="completed",
-        latency_ms=10,
-        input_tokens=12,
-        output_tokens=8,
-        classification={"policy": "allow"},
+    result = queue_domains_for_review(
+        ["pending.example", "pending.example"],
+        source="manual_live_query",
     )
-    benchmark_run_update("bench-1", status="completed")
-    benchmark = benchmark_run_get("bench-1")
-    assert benchmark is not None
-    assert benchmark["status"] == "completed"
-    assert benchmark["results"][0]["classification"]["policy"] == "allow"
+    assert result.queued == 1
+
+    rows = review_queue_get()
+    assert len(rows) == 1
+    assert rows[0]["domain"] == "pending.example"
+    assert rows[0]["status"] == "queued"
+    assert rows[0]["queue_source"] == "manual_live_query"
+    assert rows[0]["short"] == "Not analyzed."
+    assert rows[0]["breakage_risk"] is None
+
+    assert staging_remove(["pending.example"]) == 1
+    assert review_queue_get() == []
+
+
+def test_queue_filters_configured_domain_suffixes(monkeypatch, tmp_path) -> None:
+    from pihole_manager.config import load_options, save_options
+    from pihole_manager.database import queue_domains_for_review, staging_list
+
+    monkeypatch.setenv("PIHOLE_MANAGER_HOME", str(tmp_path))
+    options = load_options()
+    options.scans.excluded_domain_suffixes = [".arpa", ".internal"]
+    save_options(options)
+    init_db()
+
+    result = queue_domains_for_review(
+        ["1.0.0.127.in-addr.arpa", "router.internal", "example.com"],
+        source="manual_test",
+    )
+
+    assert result.queued == 1
+    assert result.skipped_filtered == 2
+    assert [row["domain"] for row in staging_list()] == ["example.com"]
+
+
+def test_filter_unclassified_domains(monkeypatch, tmp_path) -> None:
+    from pihole_manager.database import filter_unclassified_domains, save_classification_run
+    from pihole_manager.models import Classification, Policy, ServiceRole
+
+    monkeypatch.setenv("PIHOLE_MANAGER_HOME", str(tmp_path))
+    init_db()
+    save_classification_run(
+        Classification(
+            domain="reviewed.example",
+            policy=Policy.ALLOW,
+            category="authentication",
+            tags=("authentication",),
+            service="Reviewed",
+            service_role=ServiceRole.CORE,
+            privacy_risk=0,
+            security_risk=0,
+            breakage_risk=10,
+            confidence=0.99,
+            needs_review=False,
+            review_reason="",
+            recheck_after_days=30,
+            short="Reviewed",
+            details="Reviewed",
+            provider="test",
+            raw_text="{}",
+        )
+    )
+
+    assert filter_unclassified_domains(["reviewed.example", "new.example"]) == ["new.example"]
+
+
+def test_research_refresh_replaces_previous_provider_rows(monkeypatch, tmp_path) -> None:
+    from pihole_manager.database import init_db, research_findings_get, save_research_findings
+    from pihole_manager.models import ResearchFinding
+
+    monkeypatch.setenv("PIHOLE_MANAGER_HOME", str(tmp_path))
+    init_db()
+    save_research_findings(
+        [
+            ResearchFinding(
+                domain="example.com",
+                provider="Test source",
+                kind="test",
+                title="Old finding",
+                summary="Old",
+                retrieved_at=1,
+                expires_at=100,
+            )
+        ]
+    )
+    save_research_findings(
+        [
+            ResearchFinding(
+                domain="example.com",
+                provider="Test source",
+                kind="test",
+                title="New finding",
+                summary="New",
+                retrieved_at=2,
+                expires_at=200,
+            )
+        ]
+    )
+
+    findings = research_findings_get("example.com")
+    assert len(findings) == 1
+    assert findings[0]["title"] == "New finding"
+
+
+def test_legacy_research_raw_data_column_is_migrated(monkeypatch, tmp_path) -> None:
+    import sqlite3
+
+    from pihole_manager.database import research_findings_get
+
+    monkeypatch.setenv("PIHOLE_MANAGER_HOME", str(tmp_path))
+    path = tmp_path / "pihole_manager.sqlite3"
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        """
+        CREATE TABLE research_findings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            domain TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            title TEXT NOT NULL DEFAULT '',
+            summary TEXT NOT NULL DEFAULT '',
+            source_url TEXT NOT NULL DEFAULT '',
+            confidence REAL NOT NULL DEFAULT 0,
+            retrieved_at INTEGER NOT NULL,
+            expires_at INTEGER NOT NULL,
+            raw_data TEXT NOT NULL DEFAULT '{}'
+        );
+        INSERT INTO research_findings(
+            domain, provider, kind, title, summary, source_url,
+            confidence, retrieved_at, expires_at, raw_data
+        ) VALUES (
+            'legacy.example', 'Legacy', 'test', 'Legacy finding', 'Stored',
+            '', 0.5, 1, 9999999999, '{"legacy": true}'
+        );
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    init_db()
+
+    finding = research_findings_get("legacy.example")[0]
+    assert finding["raw_data"] == {"legacy": True}
+    assert finding["signal_type"] == "context"
+
+
+def test_newer_database_schema_is_not_downgraded(monkeypatch, tmp_path) -> None:
+    import sqlite3
+
+    import pytest
+
+    monkeypatch.setenv("PIHOLE_MANAGER_HOME", str(tmp_path))
+    path = tmp_path / "pihole_manager.sqlite3"
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        """
+        CREATE TABLE schema_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+        INSERT INTO schema_meta(key, value) VALUES ('schema_version', '999');
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    with pytest.raises(RuntimeError, match="newer Pi-hole Manager"):
+        init_db()
+
+    connection = sqlite3.connect(path)
+    version = connection.execute(
+        "SELECT value FROM schema_meta WHERE key = 'schema_version'"
+    ).fetchone()[0]
+    connection.close()
+    assert version == "999"
+
+
+def test_research_fallback_expiry_uses_configured_max_age(monkeypatch, tmp_path) -> None:
+    from pihole_manager.database import research_findings_get, save_research_findings
+    from pihole_manager.models import ResearchFinding
+
+    monkeypatch.setenv("PIHOLE_MANAGER_HOME", str(tmp_path))
+    init_db()
+    save_research_findings(
+        [
+            ResearchFinding(
+                domain="fallback.example",
+                provider="Test",
+                kind="test",
+                title="Fallback expiry",
+                summary="No provider expiry",
+                retrieved_at=1_000,
+            )
+        ],
+        default_max_age_days=7,
+    )
+
+    finding = research_findings_get("fallback.example")[0]
+    assert finding["expires_at"] == 1_000 + 7 * 86400
+
+
+def test_classification_and_review_are_saved_atomically(monkeypatch, tmp_path) -> None:
+    import pytest
+
+    from pihole_manager import database_review
+    from pihole_manager.database import classification_history
+    from pihole_manager.models import Classification, Policy, ServiceRole
+
+    monkeypatch.setenv("PIHOLE_MANAGER_HOME", str(tmp_path))
+    init_db()
+    classification = Classification(
+        domain="atomic.example",
+        policy=Policy.DENY,
+        category="tracking",
+        short="Tracker",
+        details="Tracking endpoint",
+        provider="test",
+        service_role=ServiceRole.OPTIONAL,
+    )
+
+    def fail_review(*_args, **_kwargs) -> None:
+        raise RuntimeError("review write failed")
+
+    monkeypatch.setattr(database_review, "_review_save", fail_review)
+
+    with pytest.raises(RuntimeError, match="review write failed"):
+        database_review.save_classification_run(classification)
+
+    assert classification_history("atomic.example") == []
