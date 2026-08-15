@@ -90,7 +90,7 @@ jobs:
               raise SystemExit('external trigger roadmap item not found')
           path.write_text(text.replace(old, new, 1))
           PY
-            git checkout ce1e478c664ce03a484f5523fdc33bb823468081 -- .github/workflows/ci.yml
+            git checkout HEAD -- .github/workflows/ci.yml
             rm -f .github/external-trigger*.patch
             rm -f .github/external-trigger*.b64
             git config user.name 'github-actions[bot]'
