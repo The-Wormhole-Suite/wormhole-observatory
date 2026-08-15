@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
   test:
@@ -22,6 +23,53 @@ jobs:
       - run: python -m pip install -e ".[dev]"
       - run: ruff check .
       - run: pytest
+
+  diagnose-first-failure:
+    if: github.ref == 'refs/heads/codex/llm-analysis-profiles-20260731' && github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Capture first failure
+        shell: bash
+        run: |
+          set +e
+          : > /tmp/diagnostic.log
+          python -m pip install --upgrade pip >>/tmp/diagnostic.log 2>&1
+          install_status=$?
+          if [ "$install_status" -eq 0 ]; then
+            python -m pip install -e '.[dev]' >>/tmp/diagnostic.log 2>&1
+            install_status=$?
+          fi
+          if [ "$install_status" -eq 0 ]; then
+            echo '===== RUFF =====' >>/tmp/diagnostic.log
+            ruff check . >>/tmp/diagnostic.log 2>&1
+            check_status=$?
+          else
+            check_status=$install_status
+          fi
+          if [ "$check_status" -eq 0 ]; then
+            echo '===== PYTEST =====' >>/tmp/diagnostic.log
+            pytest -x -q >>/tmp/diagnostic.log 2>&1
+            check_status=$?
+          fi
+          {
+            echo '### Temporary CI diagnostic'
+            echo
+            echo '```text'
+            tail -n 180 /tmp/diagnostic.log
+            echo '```'
+            echo
+            echo "Exit status: $check_status"
+          } > /tmp/diagnostic-comment.md
+          exit 0
+      - name: Publish diagnostic to draft PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh pr comment 2 --body-file /tmp/diagnostic-comment.md
 
   integrate-cancellable-jobs:
     if: github.ref == 'refs/heads/codex/llm-analysis-profiles-20260731' && github.actor != 'github-actions[bot]'
