@@ -6,12 +6,18 @@ import math
 import time
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, replace
 from typing import Any
 
 import requests
 
+from pihole_manager.cancellation import (
+    CancellationToken,
+    OperationCancelledError,
+    cancel_pending,
+    raise_if_cancelled,
+)
 from pihole_manager.config import (
     AnalysisPoolOptions,
     LLMProviderOptions,
@@ -119,7 +125,9 @@ def dispatch_analysis(
     *,
     options: Options | None = None,
     source: str = "",
+    cancel_token: CancellationToken | None = None,
 ) -> AnalysisDispatchResult:
+    raise_if_cancelled(cancel_token)
     selected_options = options or load_options()
     pool = _pool_by_id(selected_options, pool_id)
     normalized_domains, frozen_dossiers, dossier_hash = _freeze_dossiers(domains, dossiers)
@@ -163,6 +171,7 @@ def dispatch_analysis(
                 normalized_domains,
                 frozen_dossiers,
                 selected_options,
+                cancel_token,
             )
         elif mode is AnalysisPoolMode.FALLBACK:
             results, errors = _dispatch_fallback(
@@ -171,6 +180,7 @@ def dispatch_analysis(
                 normalized_domains,
                 frozen_dossiers,
                 selected_options,
+                cancel_token,
             )
         elif mode is AnalysisPoolMode.COMPARE:
             results, errors = _dispatch_compare(
@@ -179,6 +189,7 @@ def dispatch_analysis(
                 normalized_domains,
                 frozen_dossiers,
                 selected_options,
+                cancel_token,
             )
         else:
             results, errors = _dispatch_verify(
@@ -187,6 +198,7 @@ def dispatch_analysis(
                 normalized_domains,
                 frozen_dossiers,
                 selected_options,
+                cancel_token,
             )
         if not results:
             message = "; ".join(error.error for error in errors) or "No provider result"
@@ -207,6 +219,9 @@ def dispatch_analysis(
             provider_results=tuple(results),
             errors=tuple(errors),
         )
+    except OperationCancelledError as exc:
+        analysis_run_finish(run_id, error=str(exc), status="cancelled")
+        raise
     except Exception as exc:
         analysis_run_finish(run_id, error=str(exc))
         raise
@@ -219,7 +234,9 @@ def benchmark_domain(
     *,
     pool_id: str = "background",
     options: Options | None = None,
+    cancel_token: CancellationToken | None = None,
 ) -> str:
+    raise_if_cancelled(cancel_token)
     selected_options = options or load_options()
     pool = _pool_by_id(selected_options, pool_id)
     normalized_domains, frozen_dossiers, dossier_hash = _freeze_dossiers(
@@ -242,22 +259,28 @@ def benchmark_domain(
     )
 
     def execute(candidate: _Candidate) -> ProviderAnalysisResult:
-        return _execute_provider(
+        return _call_execute_provider(
             pool,
             candidate,
             normalized_domains,
             frozen_dossiers,
             selected_options,
             is_primary=False,
+            cancel_token=cancel_token,
         )
 
     maximum_workers = min(max(1, pool.max_parallel_requests), len(candidates))
-    with ThreadPoolExecutor(max_workers=maximum_workers) as executor:
+    executor = ThreadPoolExecutor(max_workers=maximum_workers)
+    futures: dict[Future[ProviderAnalysisResult], _Candidate] = {}
+    cancelled = False
+    try:
         futures = {executor.submit(execute, candidate): candidate for candidate in candidates}
-        for future in as_completed(futures):
+        for future in _iter_completed(futures, cancel_token):
             candidate = futures[future]
             try:
                 result = future.result()
+            except OperationCancelledError:
+                raise
             except Exception as exc:
                 benchmark_result_save(
                     run_id,
@@ -278,6 +301,13 @@ def benchmark_domain(
                 usage=result.usage,
                 classification=result.classifications[0],
             )
+    except OperationCancelledError:
+        cancelled = True
+        cancel_pending(futures)
+        benchmark_run_finish(run_id, status="cancelled", error="Operation cancelled")
+        raise
+    finally:
+        executor.shutdown(wait=not cancelled, cancel_futures=cancelled)
     benchmark_run_finish(run_id)
     return run_id
 
@@ -288,6 +318,7 @@ def _dispatch_distribute(
     domains: Sequence[str],
     dossiers: Sequence[Mapping[str, Any]],
     options: Options,
+    cancel_token: CancellationToken | None,
 ) -> tuple[list[ProviderAnalysisResult], list[ProviderAnalysisError]]:
     assignments: dict[str, list[str]] = defaultdict(list)
     dossier_by_domain = {str(dossier["domain"]): dossier for dossier in dossiers}
@@ -305,30 +336,42 @@ def _dispatch_distribute(
     results: list[ProviderAnalysisResult] = []
     errors: list[ProviderAnalysisError] = []
     maximum_workers = min(max(1, pool.max_parallel_requests), len(assignments))
-    with ThreadPoolExecutor(max_workers=maximum_workers) as executor:
-        futures = {}
+    executor = ThreadPoolExecutor(max_workers=maximum_workers)
+    futures: dict[Future[ProviderAnalysisResult], _Candidate] = {}
+    cancelled = False
+    try:
         for provider_id, assigned_domains in assignments.items():
+            raise_if_cancelled(cancel_token)
             candidate = candidate_by_id[provider_id]
             selected_dossiers = [dossier_by_domain[domain] for domain in assigned_domains]
             future = executor.submit(
-                _execute_provider,
+                _call_execute_provider,
                 pool,
                 candidate,
                 assigned_domains,
                 selected_dossiers,
                 options,
                 is_primary=True,
+                cancel_token=cancel_token,
             )
             futures[future] = candidate
-        for future in as_completed(futures):
+        for future in _iter_completed(futures, cancel_token):
             candidate = futures[future]
             try:
                 results.append(future.result())
+            except OperationCancelledError:
+                raise
             except ProviderPartialAnalysisError as exc:
                 results.append(exc.result)
                 errors.append(_provider_error(candidate, exc.cause))
             except Exception as exc:
                 errors.append(_provider_error(candidate, exc))
+    except OperationCancelledError:
+        cancelled = True
+        cancel_pending(futures)
+        raise
+    finally:
+        executor.shutdown(wait=not cancelled, cancel_futures=cancelled)
     return _sort_results(results, candidates), errors
 
 
@@ -338,25 +381,30 @@ def _dispatch_fallback(
     domains: Sequence[str],
     dossiers: Sequence[Mapping[str, Any]],
     options: Options,
+    cancel_token: CancellationToken | None,
 ) -> tuple[list[ProviderAnalysisResult], list[ProviderAnalysisError]]:
     dossier_by_domain = {str(dossier["domain"]): dossier for dossier in dossiers}
     remaining_domains = list(domains)
     results: list[ProviderAnalysisResult] = []
     errors: list[ProviderAnalysisError] = []
     for candidate in _fallback_order(candidates):
+        raise_if_cancelled(cancel_token)
         if not remaining_domains:
             break
         try:
-            result = _execute_provider(
+            result = _call_execute_provider(
                 pool,
                 candidate,
                 remaining_domains,
                 [dossier_by_domain[domain] for domain in remaining_domains],
                 options,
                 is_primary=True,
+                cancel_token=cancel_token,
             )
             results.append(result)
             remaining_domains = []
+        except OperationCancelledError:
+            raise
         except ProviderPartialAnalysisError as exc:
             results.append(exc.result)
             errors.append(_provider_error(candidate, exc.cause))
@@ -376,32 +424,45 @@ def _dispatch_compare(
     domains: Sequence[str],
     dossiers: Sequence[Mapping[str, Any]],
     options: Options,
+    cancel_token: CancellationToken | None,
 ) -> tuple[list[ProviderAnalysisResult], list[ProviderAnalysisError]]:
     results: list[ProviderAnalysisResult] = []
     errors: list[ProviderAnalysisError] = []
     maximum_workers = min(max(1, pool.max_parallel_requests), len(candidates))
-    with ThreadPoolExecutor(max_workers=maximum_workers) as executor:
+    executor = ThreadPoolExecutor(max_workers=maximum_workers)
+    futures: dict[Future[ProviderAnalysisResult], _Candidate] = {}
+    cancelled = False
+    try:
         futures = {
             executor.submit(
-                _execute_provider,
+                _call_execute_provider,
                 pool,
                 candidate,
                 domains,
                 dossiers,
                 options,
                 is_primary=False,
+                cancel_token=cancel_token,
             ): candidate
             for candidate in candidates
         }
-        for future in as_completed(futures):
+        for future in _iter_completed(futures, cancel_token):
             candidate = futures[future]
             try:
                 results.append(future.result())
+            except OperationCancelledError:
+                raise
             except ProviderPartialAnalysisError as exc:
                 results.append(exc.result)
                 errors.append(_provider_error(candidate, exc.cause))
             except Exception as exc:
                 errors.append(_provider_error(candidate, exc))
+    except OperationCancelledError:
+        cancelled = True
+        cancel_pending(futures)
+        raise
+    finally:
+        executor.shutdown(wait=not cancelled, cancel_futures=cancelled)
     return _sort_results(results, candidates), errors
 
 
@@ -411,19 +472,24 @@ def _dispatch_verify(
     domains: Sequence[str],
     dossiers: Sequence[Mapping[str, Any]],
     options: Options,
+    cancel_token: CancellationToken | None,
 ) -> tuple[list[ProviderAnalysisResult], list[ProviderAnalysisError]]:
+    raise_if_cancelled(cancel_token)
     ordered = _fallback_order(candidates)
     primary_candidate = ordered[0]
     errors: list[ProviderAnalysisError] = []
     try:
-        primary = _execute_provider(
+        primary = _call_execute_provider(
             pool,
             primary_candidate,
             domains,
             dossiers,
             options,
             is_primary=True,
+            cancel_token=cancel_token,
         )
+    except OperationCancelledError:
+        raise
     except ProviderPartialAnalysisError as exc:
         primary = exc.result
         errors.append(_provider_error(primary_candidate, exc.cause))
@@ -456,14 +522,17 @@ def _dispatch_verify(
     dossier_by_domain = {str(dossier["domain"]): dossier for dossier in dossiers}
     verify_dossiers = [dossier_by_domain[domain] for domain in verify_domains]
     try:
-        secondary = _execute_provider(
+        secondary = _call_execute_provider(
             pool,
             verifier,
             verify_domains,
             verify_dossiers,
             options,
             is_primary=False,
+            cancel_token=cancel_token,
         )
+    except OperationCancelledError:
+        raise
     except ProviderPartialAnalysisError as exc:
         secondary = exc.result
         missing_verifications = list(exc.failed_domains)
@@ -496,6 +565,36 @@ def _dispatch_verify(
     return [replace(primary, classifications=tuple(updated)), secondary], errors
 
 
+def _call_execute_provider(
+    pool: AnalysisPoolOptions,
+    candidate: _Candidate,
+    domains: Sequence[str],
+    dossiers: Sequence[Mapping[str, Any]],
+    options: Options,
+    *,
+    is_primary: bool,
+    cancel_token: CancellationToken | None,
+) -> ProviderAnalysisResult:
+    if cancel_token is None:
+        return _execute_provider(
+            pool,
+            candidate,
+            domains,
+            dossiers,
+            options,
+            is_primary=is_primary,
+        )
+    return _execute_provider(
+        pool,
+        candidate,
+        domains,
+        dossiers,
+        options,
+        is_primary=is_primary,
+        cancel_token=cancel_token,
+    )
+
+
 def _execute_provider(
     pool: AnalysisPoolOptions,
     candidate: _Candidate,
@@ -504,7 +603,9 @@ def _execute_provider(
     options: Options,
     *,
     is_primary: bool,
+    cancel_token: CancellationToken | None = None,
 ) -> ProviderAnalysisResult:
+    raise_if_cancelled(cancel_token)
     provider = candidate.provider
     profile = options.prompt_profiles[pool.profile_index]
     dossier_by_domain = {str(dossier["domain"]): dossier for dossier in dossiers}
@@ -522,6 +623,7 @@ def _execute_provider(
     batch_index = 0
     try:
         while batch_index < len(batches):
+            raise_if_cancelled(cancel_token)
             batch = batches[batch_index]
             try:
                 selected_dossiers = [dossier_by_domain[domain] for domain in batch]
@@ -534,6 +636,7 @@ def _execute_provider(
                     pool_id=pool.pool_id,
                     limit_profile=candidate.limit_profile,
                 )
+                raise_if_cancelled(cancel_token)
             except QuotaUnavailableError:
                 if len(batch) <= 1:
                     raise
@@ -553,6 +656,8 @@ def _execute_provider(
             )
             batch_index += 1
         provider_health_success(provider.provider_id, total_latency)
+    except OperationCancelledError:
+        raise
     except Exception as exc:
         retry_at = _retry_at(exc)
         if not isinstance(exc, QuotaUnavailableError):
@@ -587,6 +692,22 @@ def _execute_provider(
         total_usage,
         is_primary=is_primary,
     )
+
+
+def _iter_completed(
+    futures: Mapping[Future[ProviderAnalysisResult], _Candidate],
+    cancel_token: CancellationToken | None,
+):
+    remaining = set(futures)
+    while remaining:
+        raise_if_cancelled(cancel_token)
+        done, remaining = wait(
+            remaining,
+            timeout=0.2,
+            return_when=FIRST_COMPLETED,
+        )
+        raise_if_cancelled(cancel_token)
+        yield from done
 
 
 def _analysis_result(

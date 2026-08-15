@@ -6,7 +6,7 @@
 - [x] operating-system credential stores
 - [x] integration tests against multiple Pi-hole v6 minor versions
 - [x] connection health state and clearer offline behavior
-- cancellable long-running evidence and LLM jobs
+- [x] cancellable long-running evidence and LLM jobs
 - optional authenticated external trigger adapter for scheduled or MCP-driven review jobs
 
 ## Priority 2: Evidence quality
