@@ -5,7 +5,12 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from pihole6api import PiHole6Client, normalize_api_url
+from pihole6api import (
+    ConnectionHealth,
+    ConnectionState,
+    PiHole6Client,
+    normalize_api_url,
+)
 from pihole_manager.config import PiHoleOptions, load_options
 from pihole_manager.database import get_domain_lock
 from pihole_manager.models import ConnectionTestResult, Policy
@@ -64,10 +69,18 @@ def close_client() -> None:
         _CLIENT_SIGNATURE = None
 
 
+def get_connection_health() -> ConnectionHealth:
+    with _CLIENT_LOCK:
+        if _CLIENT is None:
+            return ConnectionHealth()
+        return _CLIENT.connection.health
+
+
 def test_connection(options: PiHoleOptions | None = None) -> ConnectionTestResult:
     settings = options or load_options().pihole
     request_url = f"{normalize_api_url(settings.base_url)}info/version"
     started = time.perf_counter()
+    client: PiHole6Client | None = None
     try:
         client = configure_client(settings)
         payload = client.ftl_info.get_version()
@@ -76,10 +89,32 @@ def test_connection(options: PiHoleOptions | None = None) -> ConnectionTestResul
         summary = "Pi-hole v6 API responded successfully"
         if version:
             summary = f"Pi-hole API responded successfully ({version})"
-        return ConnectionTestResult(True, request_url, elapsed_ms, summary, version)
+        return ConnectionTestResult(
+            True,
+            request_url,
+            elapsed_ms,
+            summary,
+            version,
+            str(client.connection.health.state),
+        )
     except Exception as exc:
         elapsed_ms = round((time.perf_counter() - started) * 1000)
-        return ConnectionTestResult(False, request_url, elapsed_ms, str(exc))
+        health = client.connection.health if client is not None else ConnectionHealth()
+        if health.state is ConnectionState.AUTH_ERROR:
+            summary = f"Pi-hole is reachable, but authentication failed: {exc}"
+        elif health.state is ConnectionState.DEGRADED:
+            summary = f"Pi-hole is reachable, but the API is temporarily unavailable: {exc}"
+        elif health.state is ConnectionState.OFFLINE:
+            summary = f"Pi-hole is offline or unreachable: {exc}"
+        else:
+            summary = str(exc)
+        return ConnectionTestResult(
+            False,
+            request_url,
+            elapsed_ms,
+            summary,
+            state=str(health.state),
+        )
 
 
 def _extract_version(payload: Any) -> str:
@@ -88,15 +123,22 @@ def _extract_version(payload: Any) -> str:
     version = payload.get("version")
     if isinstance(version, str):
         return version
-    if isinstance(version, dict):
-        for key in ("core", "ftl", "web"):
-            item = version.get(key)
-            if isinstance(item, dict):
-                value = item.get("version") or item.get("local")
+    if not isinstance(version, dict):
+        return ""
+
+    for key in ("ftl", "core", "web"):
+        item = version.get(key)
+        if isinstance(item, dict):
+            local = item.get("local")
+            if isinstance(local, dict):
+                value = local.get("version")
                 if value:
                     return str(value)
-            elif item:
-                return str(item)
+            value = item.get("version")
+            if value:
+                return str(value)
+        elif item:
+            return str(item)
     return ""
 
 
