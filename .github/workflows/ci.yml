@@ -74,8 +74,12 @@ jobs:
           } 2>&1 | tee /tmp/external-trigger-ci.log
 
       - name: Mark Priority 1 complete and commit
+        shell: bash
         run: |
-          python - <<'PY'
+          set -o pipefail
+          {
+            set -x
+            python - <<'PY'
           from pathlib import Path
 
           path = Path('docs/ROADMAP.md')
@@ -86,15 +90,17 @@ jobs:
               raise SystemExit('external trigger roadmap item not found')
           path.write_text(text.replace(old, new, 1))
           PY
-          git checkout ce1e478c664ce03a484f5523fdc33bb823468081 -- .github/workflows/ci.yml
-          rm -f .github/external-trigger*.patch
-          rm -f .github/external-trigger*.b64
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -A
-          git diff --cached --check
-          git commit -m 'Add authenticated external review trigger'
-          git push
+            git checkout ce1e478c664ce03a484f5523fdc33bb823468081 -- .github/workflows/ci.yml
+            rm -f .github/external-trigger*.patch
+            rm -f .github/external-trigger*.b64
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add -A
+            git status --short
+            git diff --cached --check
+            git commit -m 'Add authenticated external review trigger'
+            git push
+          } 2>&1 | tee /tmp/external-trigger-finalize.log
 
       - name: Publish failure diagnostic
         if: failure()
@@ -110,6 +116,9 @@ jobs:
             fi
             if [ -f /tmp/external-trigger-ci.log ]; then
               tail -n 200 /tmp/external-trigger-ci.log
+            fi
+            if [ -f /tmp/external-trigger-finalize.log ]; then
+              tail -n 200 /tmp/external-trigger-finalize.log
             fi
             echo '```'
           } > /tmp/external-trigger-comment.md
