@@ -1,6 +1,6 @@
 --- /dev/null
 +++ b/pihole_manager/external_trigger.py
-@@ -0,0 +1,271 @@
+@@ -0,0 +1,272 @@
 +from __future__ import annotations
 +
 +import hmac
@@ -8,10 +8,11 @@
 +import json
 +import logging
 +import threading
++from collections.abc import Callable
 +from dataclasses import asdict, is_dataclass
 +from http import HTTPStatus
 +from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-+from typing import Any, Callable
++from typing import Any
 +from urllib.parse import parse_qs, urlsplit
 +
 +from pihole_manager.config import ExternalTriggerOptions, load_options
