@@ -86,29 +86,7 @@ jobs:
               raise SystemExit('external trigger roadmap item not found')
           path.write_text(text.replace(old, new, 1))
           PY
-          cat > .github/workflows/ci.yml <<'YAML'
-          name: CI
-
-          on:
-            push:
-            pull_request:
-
-          jobs:
-            test:
-              runs-on: ubuntu-latest
-              strategy:
-                matrix:
-                  python-version: ["3.11", "3.12", "3.13"]
-              steps:
-                - uses: actions/checkout@v6
-                - uses: actions/setup-python@v6
-                  with:
-                    python-version: ${{ matrix.python-version }}
-                - run: python -m pip install --upgrade pip
-                - run: python -m pip install -e ".[dev]"
-                - run: ruff check .
-                - run: pytest
-          YAML
+          git checkout ce1e478c664ce03a484f5523fdc33bb823468081 -- .github/workflows/ci.yml
           rm -f .github/external-trigger*.patch
           rm -f .github/external-trigger*.b64
           git config user.name 'github-actions[bot]'
