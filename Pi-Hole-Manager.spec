@@ -4,6 +4,8 @@ import platform
 import re
 from pathlib import Path
 
+from PyInstaller.utils.hooks import collect_submodules
+
 project_root = Path(SPECPATH)
 build_root = project_root / "build"
 build_root.mkdir(parents=True, exist_ok=True)
@@ -41,7 +43,7 @@ analysis = Analysis(
         (str(manifest_path), "."),
         (str(project_root / "pihole_manager" / "data"), "pihole_manager/data"),
     ],
-    hiddenimports=[],
+    hiddenimports=collect_submodules("keyring.backends"),
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

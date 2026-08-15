@@ -12,6 +12,7 @@ dependencies = [
   "requests>=2.31,<3",
   "dnspython>=2.6,<3",
   "cryptography>=48.0.1,<49",
+  "keyring>=25,<26",
 ]
 
 [project.optional-dependencies]

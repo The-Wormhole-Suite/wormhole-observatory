@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, TypeVar, cast
 from uuid import uuid4
 
+from pihole_manager.credentials import hydrate_credentials, secure_options_payload
 from pihole_manager.models import AutomationMode, Policy
 
 T = TypeVar("T")
@@ -1581,7 +1582,10 @@ def load_options() -> Options:
                 ),
                 ui=_coerce_dataclass(UIOptions, raw.get("ui")),
             )
-            return _validate(options)
+            options = _validate(options)
+            if hydrate_credentials(options):
+                save_options(options)
+            return options
         except UnsupportedConfigVersionError:
             raise
         except (AttributeError, TypeError, ValueError) as exc:
@@ -1595,7 +1599,11 @@ def save_options(options: Options) -> None:
     options = _validate(options)
     path = options_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(asdict(options), indent=2, ensure_ascii=False) + "\n"
+    payload = json.dumps(
+        secure_options_payload(options),
+        indent=2,
+        ensure_ascii=False,
+    ) + "\n"
     with _CONFIG_LOCK:
         temp_path: Path | None = None
         try:
