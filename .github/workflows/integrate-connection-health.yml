@@ -1,0 +1,169 @@
+name: Integrate connection health
+
+on:
+  push:
+    branches:
+      - codex/llm-analysis-profiles-20260731
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Patch connection health and UI
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          p = Path('pihole6api/connection.py')
+          s = p.read_text()
+          s = s.replace('import threading\n', 'import threading\nimport time\n', 1)
+          marker = '''from pihole6api.errors import (\n    PiHole6AuthenticationError,\n    PiHole6ConnectionError,\n    PiHole6HTTPError,\n)\n'''
+          replacement = marker + 'from pihole6api.health import ConnectionHealth, ConnectionState\n'
+          if marker not in s:
+              raise SystemExit('connection import boundary not found')
+          s = s.replace(marker, replacement, 1)
+          s = s.replace(
+              '        self._closed = False\n\n        self.session = session or requests.Session()\n',
+              '        self._closed = False\n        self._health = ConnectionHealth()\n\n        self.session = session or requests.Session()\n',
+              1,
+          )
+
+          boundary = '    def __enter__(self) -> PiHole6Connection:\n'
+          helpers = '''    @property\n    def health(self) -> ConnectionHealth:\n        with self._lock:\n            return self._health\n\n    def _record_response(self, response: requests.Response, latency_ms: int) -> None:\n        now = time.time()\n        status = int(response.status_code)\n        previous = self._health\n        if 200 <= status < 300:\n            state = ConnectionState.ONLINE\n            failures = 0\n            last_success = now\n            error = ""\n        elif status == 401:\n            state = ConnectionState.AUTH_ERROR\n            failures = previous.consecutive_failures + 1\n            last_success = previous.last_success_at\n            error = response.reason or "Authentication failed"\n        elif status == 429 or status >= 500:\n            state = ConnectionState.DEGRADED\n            failures = previous.consecutive_failures + 1\n            last_success = previous.last_success_at\n            error = response.reason or f"HTTP {status}"\n        else:\n            state = ConnectionState.ONLINE\n            failures = 0\n            last_success = previous.last_success_at\n            error = response.reason or f"HTTP {status}"\n        self._health = ConnectionHealth(\n            state=state,\n            last_checked_at=now,\n            last_success_at=last_success,\n            latency_ms=max(0, int(latency_ms)),\n            consecutive_failures=failures,\n            status_code=status,\n            last_error=error,\n        )\n\n    def _record_failure(self, state: ConnectionState, error: object) -> None:\n        previous = self._health\n        self._health = ConnectionHealth(\n            state=state,\n            last_checked_at=time.time(),\n            last_success_at=previous.last_success_at,\n            latency_ms=0,\n            consecutive_failures=previous.consecutive_failures + 1,\n            status_code=0,\n            last_error=str(error),\n        )\n\n    def _record_auth_error(self, message: str) -> None:\n        self._record_failure(ConnectionState.AUTH_ERROR, message)\n\n'''
+          if boundary not in s:
+              raise SystemExit('connection class boundary not found')
+          s = s.replace(boundary, helpers + boundary, 1)
+
+          old = '''            if not isinstance(session, dict) or not session.get("valid"):\n                message = self._error_message(data, "Authentication failed")\n                raise PiHole6AuthenticationError(message)\n'''
+          new = '''            if not isinstance(session, dict) or not session.get("valid"):\n                message = self._error_message(data, "Authentication failed")\n                self._record_auth_error(message)\n                raise PiHole6AuthenticationError(message)\n'''
+          if old not in s:
+              raise SystemExit('auth invalid-session boundary not found')
+          s = s.replace(old, new, 1)
+          old = '''            if not self.session_id:\n                raise PiHole6AuthenticationError("Authentication returned no session ID")\n'''
+          new = '''            if not self.session_id:\n                message = "Authentication returned no session ID"\n                self._record_auth_error(message)\n                raise PiHole6AuthenticationError(message)\n'''
+          if old not in s:
+              raise SystemExit('auth sid boundary not found')
+          s = s.replace(old, new, 1)
+
+          start = s.index('    def _send_raw(\n')
+          end = s.index('    def request(\n', start)
+          new_send = '''    def _send_raw(\n        self,\n        method: str,\n        endpoint: str,\n        *,\n        params: dict[str, Any] | None = None,\n        json_data: Any = None,\n        files: Any = None,\n        form_data: Any = None,\n        authenticated: bool = True,\n    ) -> requests.Response:\n        if self._closed:\n            raise PiHole6ConnectionError("Connection is already closed")\n        url = self._url(endpoint)\n        headers = self._headers() if authenticated else {"Accept": "application/json"}\n        started = time.perf_counter()\n        try:\n            response = self.session.request(\n                method=method,\n                url=url,\n                headers=headers,\n                params=params,\n                json=json_data,\n                files=files,\n                data=form_data,\n                verify=self.verify_tls,\n                timeout=self.timeout,\n            )\n        except requests.Timeout as exc:\n            self._record_failure(ConnectionState.OFFLINE, exc)\n            raise PiHole6ConnectionError(f"Request timed out: {url}") from exc\n        except requests.ConnectionError as exc:\n            self._record_failure(ConnectionState.OFFLINE, exc)\n            raise PiHole6ConnectionError(\n                f"Could not connect to {url}. Check the Pi-hole address, protocol, and port."\n            ) from exc\n        except requests.RequestException as exc:\n            self._record_failure(ConnectionState.OFFLINE, exc)\n            raise PiHole6ConnectionError(f"Request failed for {url}: {exc}") from exc\n        latency_ms = round((time.perf_counter() - started) * 1000)\n        self._record_response(response, latency_ms)\n        return response\n\n'''
+          s = s[:start] + new_send + s[end:]
+
+          old = '''            finally:\n                self.session.close()\n                self._closed = True\n'''
+          new = '''            finally:\n                self.session.close()\n                self._closed = True\n                previous = self._health\n                self._health = ConnectionHealth(\n                    state=ConnectionState.CLOSED,\n                    last_checked_at=time.time(),\n                    last_success_at=previous.last_success_at,\n                    latency_ms=previous.latency_ms,\n                    consecutive_failures=previous.consecutive_failures,\n                    status_code=previous.status_code,\n                    last_error=previous.last_error,\n                )\n'''
+          if old not in s:
+              raise SystemExit('connection close boundary not found')
+          s = s.replace(old, new, 1)
+          p.write_text(s)
+
+          p = Path('pihole6api/__init__.py')
+          s = p.read_text()
+          marker = '''from pihole6api.errors import (\n    PiHole6AuthenticationError,\n    PiHole6ConnectionError,\n    PiHole6Error,\n    PiHole6HTTPError,\n)\n'''
+          s = s.replace(marker, marker + 'from pihole6api.health import ConnectionHealth, ConnectionState\n', 1)
+          s = s.replace(
+              '    "PiHole6AuthenticationError",\n',
+              '    "ConnectionHealth",\n    "ConnectionState",\n    "PiHole6AuthenticationError",\n',
+              1,
+          )
+          p.write_text(s)
+
+          p = Path('pihole_manager/models.py')
+          s = p.read_text()
+          s = s.replace(
+              '    version: str = ""\n',
+              '    version: str = ""\n    state: str = "unknown"\n',
+              1,
+          )
+          p.write_text(s)
+
+          p = Path('pihole_manager/pihole_service.py')
+          s = p.read_text()
+          s = s.replace(
+              'from pihole6api import PiHole6Client, normalize_api_url\n',
+              'from pihole6api import ConnectionHealth, ConnectionState, PiHole6Client, normalize_api_url\n',
+              1,
+          )
+          boundary = '''def close_client() -> None:\n    global _CLIENT, _CLIENT_SIGNATURE\n    with _CLIENT_LOCK:\n        if _CLIENT is not None:\n            _CLIENT.close()\n        _CLIENT = None\n        _CLIENT_SIGNATURE = None\n\n\n'''
+          addition = boundary + '''def get_connection_health() -> ConnectionHealth:\n    with _CLIENT_LOCK:\n        if _CLIENT is None:\n            return ConnectionHealth()\n        return _CLIENT.connection.health\n\n\n'''
+          if boundary not in s:
+              raise SystemExit('pihole_service close boundary not found')
+          s = s.replace(boundary, addition, 1)
+
+          start = s.index('def test_connection(options: PiHoleOptions | None = None) -> ConnectionTestResult:\n')
+          end = s.index('\n\ndef _extract_version(payload: Any) -> str:\n', start)
+          new_test = '''def test_connection(options: PiHoleOptions | None = None) -> ConnectionTestResult:\n    settings = options or load_options().pihole\n    request_url = f"{normalize_api_url(settings.base_url)}info/version"\n    started = time.perf_counter()\n    client: PiHole6Client | None = None\n    try:\n        client = configure_client(settings)\n        payload = client.ftl_info.get_version()\n        elapsed_ms = round((time.perf_counter() - started) * 1000)\n        version = _extract_version(payload)\n        summary = "Pi-hole v6 API responded successfully"\n        if version:\n            summary = f"Pi-hole API responded successfully ({version})"\n        return ConnectionTestResult(\n            True,\n            request_url,\n            elapsed_ms,\n            summary,\n            version,\n            str(client.connection.health.state),\n        )\n    except Exception as exc:\n        elapsed_ms = round((time.perf_counter() - started) * 1000)\n        health = client.connection.health if client is not None else ConnectionHealth()\n        if health.state is ConnectionState.AUTH_ERROR:\n            summary = f"Pi-hole is reachable, but authentication failed: {exc}"\n        elif health.state is ConnectionState.DEGRADED:\n            summary = f"Pi-hole is reachable, but the API is temporarily unavailable: {exc}"\n        elif health.state is ConnectionState.OFFLINE:\n            summary = f"Pi-hole is offline or unreachable: {exc}"\n        else:\n            summary = str(exc)\n        return ConnectionTestResult(\n            False,\n            request_url,\n            elapsed_ms,\n            summary,\n            state=str(health.state),\n        )\n'''
+          s = s[:start] + new_test + s[end:]
+
+          start = s.index('def _extract_version(payload: Any) -> str:\n')
+          end = s.index('\n\ndef extract_collection(', start)
+          new_extract = '''def _extract_version(payload: Any) -> str:\n    if not isinstance(payload, dict):\n        return ""\n    version = payload.get("version")\n    if isinstance(version, str):\n        return version\n    if not isinstance(version, dict):\n        return ""\n\n    # Prefer FTL because this is the component implementing the v6 API.\n    for key in ("ftl", "core", "web"):\n        item = version.get(key)\n        if isinstance(item, dict):\n            local = item.get("local")\n            if isinstance(local, dict):\n                value = local.get("version")\n                if value:\n                    return str(value)\n            value = item.get("version")\n            if value:\n                return str(value)\n        elif item:\n            return str(item)\n    return ""\n'''
+          s = s[:start] + new_extract + s[end:]
+          p.write_text(s)
+
+          p = Path('pihole_manager/gui/app.py')
+          s = p.read_text()
+          s = s.replace(
+              'from pihole_manager.pihole_service import close_client\n',
+              'from pihole_manager.pihole_service import close_client, test_connection\n',
+              1,
+          )
+          old = '''        self.executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ui")\n\n        apply_theme(self, options.ui.theme)\n'''
+          new = '''        self.executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ui")\n        self._closing = False\n        self._health_check_running = False\n        self._health_after_id: str | None = None\n\n        apply_theme(self, options.ui.theme)\n'''
+          if old not in s:
+              raise SystemExit('app executor boundary not found')
+          s = s.replace(old, new, 1)
+          old = '''        self.simulation_toggle.place(relx=1.0, x=-12, y=3, anchor="ne")\n        self._update_simulation_text()\n\n'''
+          new = '''        self.simulation_toggle.place(relx=1.0, x=-12, y=3, anchor="ne")\n        self._update_simulation_text()\n\n        self.connection_status_text = tk.StringVar(value="Pi-hole: checking …")\n        self.connection_status_label = ttk.Label(\n            notebook_host,\n            textvariable=self.connection_status_text,\n        )\n        self.connection_status_label.place(x=12, y=5, anchor="nw")\n\n'''
+          if old not in s:
+              raise SystemExit('app simulation boundary not found')
+          s = s.replace(old, new, 1)
+          old = '''        get_scanner()\n        get_classifier()\n'''
+          new = '''        get_scanner()\n        get_classifier()\n        self.after(400, self._schedule_health_check)\n'''
+          if old not in s:
+              raise SystemExit('app worker boundary not found')
+          s = s.replace(old, new, 1)
+          old = '''        self.llm_tab.reload_preferences()\n\n    def _toggle_simulation_mode(self) -> None:\n'''
+          new = '''        self.llm_tab.reload_preferences()\n        self._schedule_health_check()\n\n    def _schedule_health_check(self) -> None:\n        if self._closing or self._health_check_running:\n            return\n        self._health_check_running = True\n        future = self.executor.submit(test_connection)\n        future.add_done_callback(self._health_check_done)\n\n    def _health_check_done(self, future: Future) -> None:\n        if self._closing:\n            return\n        try:\n            self.after(0, self._show_health_result, future)\n        except tk.TclError:\n            return\n\n    def _show_health_result(self, future: Future) -> None:\n        if self._closing:\n            return\n        self._health_check_running = False\n        try:\n            result = future.result()\n        except Exception:\n            self.connection_status_text.set("Pi-hole: status unavailable")\n        else:\n            if result.success:\n                version = f" · {result.version}" if result.version else ""\n                self.connection_status_text.set(\n                    f"Pi-hole: online{version} · {result.elapsed_ms} ms"\n                )\n            elif result.state == "auth_error":\n                self.connection_status_text.set("Pi-hole: authentication failed")\n            elif result.state == "degraded":\n                self.connection_status_text.set("Pi-hole: API degraded")\n            else:\n                self.connection_status_text.set("Pi-hole: offline")\n        self._health_after_id = self.after(30_000, self._schedule_health_check)\n\n    def _toggle_simulation_mode(self) -> None:\n'''
+          if old not in s:
+              raise SystemExit('app settings boundary not found')
+          s = s.replace(old, new, 1)
+          old = '''    def _on_close(self) -> None:\n        options = load_options()\n'''
+          new = '''    def _on_close(self) -> None:\n        self._closing = True\n        if self._health_after_id is not None:\n            try:\n                self.after_cancel(self._health_after_id)\n            except tk.TclError:\n                pass\n        options = load_options()\n'''
+          if old not in s:
+              raise SystemExit('app close boundary not found')
+          s = s.replace(old, new, 1)
+          p.write_text(s)
+
+          p = Path('docs/ROADMAP.md')
+          s = p.read_text()
+          s = s.replace(
+              '- connection health state and clearer offline behavior',
+              '- [x] connection health state and clearer offline behavior',
+              1,
+          )
+          p.write_text(s)
+          PY
+
+      - name: Install and test
+        run: |
+          python -m pip install -e '.[dev]'
+          python -m compileall -q pihole6api pihole_manager tests
+          pytest tests/test_connection.py tests/test_connection_health.py tests/test_pihole_service.py -q
+          ruff check pihole6api/connection.py pihole6api/health.py pihole_manager/pihole_service.py pihole_manager/models.py pihole_manager/gui/app.py tests/test_connection_health.py tests/test_pihole_service.py
+
+      - name: Remove one-shot workflow and commit
+        run: |
+          git rm .github/workflows/integrate-connection-health.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add pihole6api pihole_manager tests docs/ROADMAP.md
+          git diff --cached --check
+          git commit -m "Add Pi-hole connection health state and offline UI"
+          git push
