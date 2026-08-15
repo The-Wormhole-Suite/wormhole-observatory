@@ -5,7 +5,7 @@
 - [x] versioned SQLite migrations with rollback tests
 - [x] operating-system credential stores
 - [x] integration tests against multiple Pi-hole v6 minor versions
-- connection health state and clearer offline behavior
+- [x] connection health state and clearer offline behavior
 - cancellable long-running evidence and LLM jobs
 - optional authenticated external trigger adapter for scheduled or MCP-driven review jobs
 
