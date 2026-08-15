@@ -23,7 +23,11 @@ class FakeResponse:
 
 
 class FakeSession:
-    def __init__(self, responses: list[FakeResponse] | None = None, error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        responses: list[FakeResponse] | None = None,
+        error: Exception | None = None,
+    ) -> None:
         self.responses = responses or []
         self.error = error
 

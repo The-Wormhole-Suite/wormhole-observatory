@@ -27,10 +27,7 @@ def _local_ftl_version(payload: object) -> str:
     # Pi-hole v6 exposes the local component under ftl.local. Keep support for
     # early v6 response fixtures that exposed version directly below ftl.
     local = ftl.get("local")
-    if isinstance(local, dict):
-        value = local.get("version")
-    else:
-        value = ftl.get("version")
+    value = local.get("version") if isinstance(local, dict) else ftl.get("version")
     assert isinstance(value, str) and value
     return value.removeprefix("v")
 
@@ -48,7 +45,10 @@ def test_real_pihole_v6_api_contract() -> None:
         version_payload = client.ftl_info.get_version()
         ftl_version = _local_ftl_version(version_payload)
         if EXPECTED_FTL_MINOR:
-            assert ftl_version.startswith(EXPECTED_FTL_MINOR + ".") or ftl_version == EXPECTED_FTL_MINOR
+            assert (
+                ftl_version.startswith(EXPECTED_FTL_MINOR + ".")
+                or ftl_version == EXPECTED_FTL_MINOR
+            )
 
         endpoints = client.ftl_info.get_endpoints()
         assert isinstance(endpoints, dict)
