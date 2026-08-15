@@ -9,6 +9,7 @@ from tkinter import ttk
 from pihole_manager import __version__
 from pihole_manager.config import load_options, save_options
 from pihole_manager.database import init_db
+from pihole_manager.external_trigger import configure_external_trigger, stop_external_trigger
 from pihole_manager.gui.tabs.domains import DomainsTab
 from pihole_manager.gui.tabs.history import HistoryTab
 from pihole_manager.gui.tabs.lists import ListsTab
@@ -81,6 +82,7 @@ class App(tk.Tk):
 
         get_scanner()
         get_classifier()
+        self._configure_external_trigger(options)
         self.after(400, self._schedule_health_check)
         if options.provider_registry.auto_update:
             registry_future = self.executor.submit(refresh_provider_registry_if_due)
@@ -103,7 +105,15 @@ class App(tk.Tk):
         self.domains_tab.reload_preferences()
         self.domains_tab.refresh()
         self.llm_tab.reload_preferences()
+        self._configure_external_trigger(options)
         self._schedule_health_check()
+
+    @staticmethod
+    def _configure_external_trigger(options) -> None:
+        try:
+            configure_external_trigger(options.external_trigger)
+        except Exception as exc:
+            log.warning("External review trigger could not start: %s", exc)
 
     def _schedule_health_check(self) -> None:
         if self._closing or self._health_check_running:
@@ -170,6 +180,7 @@ class App(tk.Tk):
         options.ui.window_width = max(self.winfo_width(), 800)
         options.ui.window_height = max(self.winfo_height(), 600)
         save_options(options)
+        stop_external_trigger()
         stop_workers()
         close_client()
         self.executor.shutdown(wait=False, cancel_futures=True)

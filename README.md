@@ -96,6 +96,24 @@ The **History Browser** searches Pi-hole query history by time range, domain, an
 
 An optional idle history backfill can inspect older query pages after the live collector has received no new rows for a configured period. It queues only unclassified domains or domains whose recheck is due, processes one bounded page per cycle, and is disabled by default. Queue filtering is centralized; `.arpa` is excluded by default and additional suffixes can be configured under Automation without removing those rows from Live Queries or History Browser.
 
+## Authenticated external review trigger
+
+The Application settings can optionally expose a small authenticated HTTP trigger for schedulers,
+Home Assistant automations, or MCP tooling. It binds to `127.0.0.1` by default and refuses a
+non-loopback bind unless remote access is explicitly enabled. The bearer token is stored through
+the operating-system credential store when a native keyring backend is available.
+
+Authenticated endpoints are intentionally limited to queue control:
+
+- `GET /health` checks that the trigger is reachable and authenticated.
+- `POST /v1/review` with `{"domains": ["example.com"]}` queues explicit domains for realtime review.
+- `POST /v1/recheck-due?limit=100` queues domains whose scheduled recheck is due.
+- `POST /v1/cancel` cancels active evidence/LLM jobs cooperatively.
+
+The HTTP request never waits for research or an LLM response. It only updates the local queue, so
+external clients receive a bounded response and normal quota, evidence, review, and automation
+rules still apply.
+
 ## Settings behavior
 
 Settings pages scroll vertically when their content does not fit in the available window. Application, automation, provider, analysis-pool, prompt-profile, and evidence-source changes are saved automatically after validation. Pi-hole connection values remain explicit: **Save + Test** stores the base URL, password, timeout, and TLS setting before testing the saved connection. Optional help icons can be disabled globally from the Application page.

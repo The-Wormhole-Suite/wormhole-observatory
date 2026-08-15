@@ -54,6 +54,7 @@ def _delete_secret(key: str) -> bool:
 
 def _credential_slots(options: Any):
     yield "pihole/password", options.pihole, "password"
+    yield "external_trigger/token", options.external_trigger, "token"
     for provider in options.llm_providers:
         provider_id = str(provider.provider_id or "").strip()
         if provider_id:
@@ -102,6 +103,14 @@ def secure_options_payload(options: Any) -> dict[str, Any]:
     else:
         _delete_secret("pihole/password")
         payload["pihole"]["password"] = ""
+
+    trigger_token = str(options.external_trigger.token or "")
+    if trigger_token:
+        if _write_secret("external_trigger/token", trigger_token):
+            payload["external_trigger"]["token"] = ""
+    else:
+        _delete_secret("external_trigger/token")
+        payload["external_trigger"]["token"] = ""
 
     llm_payload = payload.get("llm_providers", [])
     for index, provider in enumerate(options.llm_providers):
