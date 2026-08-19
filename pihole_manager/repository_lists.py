@@ -104,7 +104,8 @@ def research_repository_lists(
                 provider,
                 summary=(
                     "No match was found in the enabled locally cached repository lists. "
-                    "A missing match is neutral evidence and does not imply that the domain is safe."
+                    "A missing match is neutral evidence and does not imply that the "
+                    "domain is safe."
                 ),
             )
         ]
