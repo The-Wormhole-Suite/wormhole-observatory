@@ -146,6 +146,24 @@ _SOURCE_DEFINITIONS = {
             True,
             "Retrieves popularity bucket, rank, and Cloudflare domain categories.",
         ),
+        SourceDefinition(
+            "repository_lists",
+            "Curated repository blocklists",
+            "catalog",
+            False,
+            False,
+            "Downloads selected upstream DNS-safe lists and performs lookups locally.",
+            "Per-source licensing applies; sources requiring review remain disabled.",
+        ),
+        SourceDefinition(
+            "urlhaus",
+            "URLhaus host lookup",
+            "lookup",
+            True,
+            True,
+            "Queries the authenticated URLhaus host endpoint for malware-distribution URLs.",
+            "Community API is subject to abuse.ch fair-use terms.",
+        ),
     )
 }
 
