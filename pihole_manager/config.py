@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, TypeVar, cast
 from uuid import uuid4
 
+from pihole_manager.credentials import hydrate_credentials, secure_options_payload
 from pihole_manager.models import AutomationMode, Policy
 
 T = TypeVar("T")
@@ -290,6 +291,16 @@ class UpdateOptions:
 
 
 @dataclass(slots=True)
+class ExternalTriggerOptions:
+    enabled: bool = False
+    bind_host: str = "127.0.0.1"
+    port: int = 8765
+    token: str = ""
+    allow_remote: bool = False
+    max_domains_per_request: int = 500
+
+
+@dataclass(slots=True)
 class ResearchProviderOptions:
     name: str = "RDAP registration data"
     kind: str = "rdap"
@@ -489,6 +500,7 @@ class Options:
     research: ResearchOptions = field(default_factory=ResearchOptions)
     updates: UpdateOptions = field(default_factory=UpdateOptions)
     provider_registry: ProviderRegistryOptions = field(default_factory=ProviderRegistryOptions)
+    external_trigger: ExternalTriggerOptions = field(default_factory=ExternalTriggerOptions)
     llm_providers: list[LLMProviderOptions] = field(default_factory=lambda: [LLMProviderOptions()])
     analysis_pools: list[AnalysisPoolOptions] = field(default_factory=list)
     prompt_profiles: list[PromptProfileOptions] = field(
@@ -1003,6 +1015,33 @@ def _validate(options: Options) -> Options:
         _as_int(options.notify.rate_limit_sec, defaults.notify.rate_limit_sec),
     )
     options.notify.toast_title = str(options.notify.toast_title or defaults.notify.toast_title)
+
+    options.external_trigger.enabled = _as_bool(
+        options.external_trigger.enabled,
+        defaults.external_trigger.enabled,
+    )
+    options.external_trigger.bind_host = str(
+        options.external_trigger.bind_host or defaults.external_trigger.bind_host
+    ).strip()
+    options.external_trigger.port = min(
+        65_535,
+        max(1, _as_int(options.external_trigger.port, defaults.external_trigger.port)),
+    )
+    options.external_trigger.token = str(options.external_trigger.token or "")
+    options.external_trigger.allow_remote = _as_bool(
+        options.external_trigger.allow_remote,
+        defaults.external_trigger.allow_remote,
+    )
+    options.external_trigger.max_domains_per_request = min(
+        5_000,
+        max(
+            1,
+            _as_int(
+                options.external_trigger.max_domains_per_request,
+                defaults.external_trigger.max_domains_per_request,
+            ),
+        ),
+    )
 
     options.scans.enabled = _as_bool(options.scans.enabled, defaults.scans.enabled)
     options.scans.interval_sec = max(
@@ -1543,6 +1582,7 @@ def load_options() -> Options:
     with _CONFIG_LOCK:
         if not path.exists():
             options = _validate(Options())
+            hydrate_credentials(options)
             save_options(options)
             return options
         try:
@@ -1567,6 +1607,10 @@ def load_options() -> Options:
                     ProviderRegistryOptions,
                     raw.get("provider_registry"),
                 ),
+                external_trigger=_coerce_dataclass(
+                    ExternalTriggerOptions,
+                    raw.get("external_trigger"),
+                ),
                 llm_providers=_load_llm_providers(raw.get("llm_providers")),
                 analysis_pools=_load_analysis_pools(raw.get("analysis_pools")),
                 prompt_profiles=_load_list(
@@ -1581,7 +1625,10 @@ def load_options() -> Options:
                 ),
                 ui=_coerce_dataclass(UIOptions, raw.get("ui")),
             )
-            return _validate(options)
+            options = _validate(options)
+            if hydrate_credentials(options):
+                save_options(options)
+            return options
         except UnsupportedConfigVersionError:
             raise
         except (AttributeError, TypeError, ValueError) as exc:
@@ -1595,7 +1642,11 @@ def save_options(options: Options) -> None:
     options = _validate(options)
     path = options_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(asdict(options), indent=2, ensure_ascii=False) + "\n"
+    payload = json.dumps(
+        secure_options_payload(options),
+        indent=2,
+        ensure_ascii=False,
+    ) + "\n"
     with _CONFIG_LOCK:
         temp_path: Path | None = None
         try:

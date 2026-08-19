@@ -85,8 +85,14 @@ def test_manual_queue_source_forces_review(monkeypatch, tmp_path) -> None:
     init_db()
     options = Options()
     options.llm.automation_mode = "hybrid"
-    options.llm.simulation_mode = True
+    options.llm.simulation_mode = False
     monkeypatch.setattr(workers, "load_options", lambda: options)
+    applied: list[tuple] = []
+    monkeypatch.setattr(
+        workers,
+        "add_exact_domain",
+        lambda *args, **kwargs: applied.append((*args, kwargs)),
+    )
 
     classification = Classification(
         domain="manual.example",
@@ -120,6 +126,7 @@ def test_manual_queue_source_forces_review(monkeypatch, tmp_path) -> None:
     assert rows[0]["domain"] == "manual.example"
     assert rows[0]["review_reason"] == "Manually queued for review."
     assert rows[0]["planned_action"] == ""
+    assert applied == []
 
 
 def test_compare_result_is_history_only(monkeypatch, tmp_path) -> None:

@@ -90,6 +90,10 @@ class SettingsTab(ttk.Frame):
         self._set_tooltips_enabled(enabled)
         self.after_idle(self._set_tooltips_enabled, enabled)
 
+    def cancel_active_work(self, *, notify: bool = True) -> bool:
+        cancel = getattr(self.analysis_pools_page, "cancel_active_work", None)
+        return bool(cancel(notify=notify)) if callable(cancel) else False
+
     def _set_tooltips_enabled(self, enabled: bool) -> None:
         for page in self.pages:
             setter = getattr(page, "set_tooltips_enabled", None)

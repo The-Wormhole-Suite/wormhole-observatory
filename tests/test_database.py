@@ -93,6 +93,163 @@ def test_legacy_staging_table_migrates_before_pool_index_creation(
     assert row["pool_id"] == "background"
     assert row["available_at"] == 0
 
+    connection = sqlite3.connect(tmp_path / "pihole_manager.sqlite3")
+    version = connection.execute(
+        "SELECT value FROM schema_meta WHERE key = 'schema_version'"
+    ).fetchone()[0]
+    connection.close()
+    assert version == "12"
+
+
+def test_schema_migration_rolls_back_on_failure(monkeypatch, tmp_path) -> None:
+    import sqlite3
+
+    import pytest
+
+    import pihole_manager.database_core as database_core
+
+    monkeypatch.setenv("PIHOLE_MANAGER_HOME", str(tmp_path))
+    init_db()
+
+    database = tmp_path / "pihole_manager.sqlite3"
+    connection = sqlite3.connect(database)
+    connection.execute(
+        "UPDATE schema_meta SET value = '10' WHERE key = 'schema_version'"
+    )
+    connection.commit()
+    connection.close()
+
+    def failing_migration(connection):
+        connection.execute("CREATE TABLE migration_should_rollback (id INTEGER)")
+        raise RuntimeError("simulated migration failure")
+
+    monkeypatch.setitem(database_core.SCHEMA_MIGRATIONS, 11, failing_migration)
+
+    with pytest.raises(RuntimeError, match="simulated migration failure"):
+        init_db()
+
+    connection = sqlite3.connect(database)
+    version = connection.execute(
+        "SELECT value FROM schema_meta WHERE key = 'schema_version'"
+    ).fetchone()[0]
+    table = connection.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+        ("migration_should_rollback",),
+    ).fetchone()
+    connection.close()
+
+    assert version == "10"
+    assert table is None
+
+
+def test_legacy_schema_bootstrap_rolls_back_as_one_unit(monkeypatch, tmp_path) -> None:
+    import sqlite3
+
+    import pytest
+
+    import pihole_manager.database_core as database_core
+
+    monkeypatch.setenv("PIHOLE_MANAGER_HOME", str(tmp_path))
+    database = tmp_path / "pihole_manager.sqlite3"
+    connection = sqlite3.connect(database)
+    connection.executescript(
+        """
+        CREATE TABLE schema_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+        INSERT INTO schema_meta(key, value) VALUES ('schema_version', '7');
+        CREATE TABLE staging_domains (
+            domain TEXT PRIMARY KEY,
+            state TEXT NOT NULL DEFAULT 'queued',
+            attempts INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            last_error TEXT NOT NULL DEFAULT ''
+        );
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    def failing_migration(connection):
+        connection.execute("CREATE TABLE migration_should_rollback (id INTEGER)")
+        raise RuntimeError("simulated legacy migration failure")
+
+    monkeypatch.setitem(database_core.SCHEMA_MIGRATIONS, 9, failing_migration)
+
+    with pytest.raises(RuntimeError, match="simulated legacy migration failure"):
+        init_db()
+
+    connection = sqlite3.connect(database)
+    version = connection.execute(
+        "SELECT value FROM schema_meta WHERE key = 'schema_version'"
+    ).fetchone()[0]
+    columns = {
+        row[1] for row in connection.execute("PRAGMA table_info(staging_domains)").fetchall()
+    }
+    tables = {
+        row[0]
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall()
+    }
+    indexes = {
+        row[0]
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'index'"
+        ).fetchall()
+    }
+    connection.close()
+
+    assert version == "7"
+    assert "pool_id" not in columns
+    assert "migration_should_rollback" not in tables
+    assert "domains" not in tables
+    assert "idx_staging_pool_state_created" not in indexes
+
+
+def test_benchmark_run_finish_persists_completed_and_cancelled_states(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from pihole_manager.database import (
+        benchmark_run_finish,
+        benchmark_run_get,
+        benchmark_run_start,
+    )
+
+    monkeypatch.setenv("PIHOLE_MANAGER_HOME", str(tmp_path))
+    init_db()
+
+    completed_id = benchmark_run_start(
+        "completed.example",
+        "background",
+        {"domain": "completed.example"},
+        "completed-hash",
+    )
+    benchmark_run_finish(completed_id)
+    completed = benchmark_run_get(completed_id)
+    assert completed is not None
+    assert completed["status"] == "completed"
+    assert completed["error"] == ""
+
+    cancelled_id = benchmark_run_start(
+        "cancelled.example",
+        "background",
+        {"domain": "cancelled.example"},
+        "cancelled-hash",
+    )
+    benchmark_run_finish(
+        cancelled_id,
+        status="cancelled",
+        error="user cancelled",
+    )
+    cancelled = benchmark_run_get(cancelled_id)
+    assert cancelled is not None
+    assert cancelled["status"] == "cancelled"
+    assert cancelled["error"] == "user cancelled"
+
 
 def test_review_fields_remain_separate(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("PIHOLE_MANAGER_HOME", str(tmp_path))

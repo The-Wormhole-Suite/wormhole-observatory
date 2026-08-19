@@ -63,6 +63,19 @@ def test_normalize_api_url(value: str, expected: str) -> None:
     assert normalize_api_url(value) == expected
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        "ftp://pi.hole",
+        "https://user:secret@pi.hole",
+    ],
+)
+def test_normalize_api_url_rejects_invalid_or_embedded_credentials(value: str) -> None:
+    with pytest.raises(ValueError):
+        normalize_api_url(value)
+
+
 def test_authenticated_request_uses_session_headers_and_tls_setting() -> None:
     fake = FakeSession(
         [

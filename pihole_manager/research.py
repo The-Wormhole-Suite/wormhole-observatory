@@ -3,12 +3,18 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable
-from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from typing import Any
 
 import requests
 
+from pihole_manager.cancellation import (
+    CancellationToken,
+    OperationCancelledError,
+    cancel_pending,
+    raise_if_cancelled,
+)
 from pihole_manager.config import ResearchProviderOptions, load_options
 from pihole_manager.database import (
     get_domain_lock,
@@ -25,6 +31,7 @@ from pihole_manager.research_common import (
     ResearchError,
     normalize_domain,
     provider_snapshot,
+    redact_provider_text,
     register_provider_failure,
     register_provider_success,
 )
@@ -140,7 +147,7 @@ def test_research_provider(
             status="fail",
             finding_count=0,
             elapsed_ms=int((time.monotonic() - started) * 1000),
-            summary=_test_error_summary(exc),
+            summary=_test_error_summary(exc, provider),
         )
     visible = [item for item in findings if item.raw_data.get("include_in_prompt", True)]
     first = visible[0] if visible else findings[0] if findings else None
@@ -161,8 +168,8 @@ def test_research_provider(
     )
 
 
-def _test_error_summary(exc: Exception) -> str:
-    text = str(exc).strip().replace("\n", " ")
+def _test_error_summary(exc: Exception, provider: ResearchProviderOptions) -> str:
+    text = redact_provider_text(exc, provider).strip().replace("\n", " ")
     lowered = text.lower()
     if "failed to resolve" in lowered or "nameresolutionerror" in lowered:
         return "DNS resolution failed for the source host."
@@ -175,18 +182,29 @@ def _test_error_summary(exc: Exception) -> str:
     return text[:500] or exc.__class__.__name__
 
 
-def research_domain(domain: str, *, force: bool = False) -> list[ResearchFinding]:
+def research_domain(
+    domain: str,
+    *,
+    force: bool = False,
+    cancel_token: CancellationToken | None = None,
+) -> list[ResearchFinding]:
     normalized = normalize_domain(domain)
     if not normalized:
         raise ValueError("domain must not be empty")
-    return research_many([normalized], force=force).get(normalized, [])
+    return research_many(
+        [normalized],
+        force=force,
+        cancel_token=cancel_token,
+    ).get(normalized, [])
 
 
 def research_many(
     domains: list[str],
     *,
     force: bool = False,
+    cancel_token: CancellationToken | None = None,
 ) -> dict[str, list[ResearchFinding]]:
+    raise_if_cancelled(cancel_token)
     normalized_domains = list(
         dict.fromkeys(normalized for value in domains if (normalized := normalize_domain(value)))
     )
@@ -197,6 +215,7 @@ def research_many(
     cached_by_domain: dict[str, list[ResearchFinding]] = {}
     locked_domains: list[str] = []
     for domain in normalized_domains:
+        raise_if_cancelled(cancel_token)
         cached = [
             _finding_from_row(row)
             for row in research_findings_get(domain, fresh_only=True, limit=500)
@@ -222,6 +241,7 @@ def research_many(
     pending: list[tuple[str, int, ResearchProviderOptions]] = []
     locked = set(locked_domains)
     for domain in normalized_domains:
+        raise_if_cancelled(cancel_token)
         if domain in locked:
             continue
         cached_providers = (
@@ -245,32 +265,52 @@ def research_many(
         tuple[str, ResearchProviderOptions],
     ] = {}
     collected: list[ResearchFinding] = []
+    cancelled = False
     try:
         for domain, provider_index, provider in pending:
+            raise_if_cancelled(cancel_token)
             future = executors[provider_index].submit(
                 _run_provider_with_retries,
                 domain,
                 provider,
+                cancel_token,
             )
             futures[future] = (domain, provider)
 
-        for future in as_completed(futures):
-            domain, provider = futures[future]
-            try:
-                selected = future.result()[: provider.max_results]
-            except Exception as exc:
-                log.warning(
-                    "Evidence source %s failed for %s: %s",
-                    provider.name,
-                    domain,
-                    exc,
-                )
-                continue
-            output[domain].extend(selected)
-            collected.extend(selected)
+        remaining = set(futures)
+        while remaining:
+            raise_if_cancelled(cancel_token)
+            done, remaining = wait(
+                remaining,
+                timeout=0.2,
+                return_when=FIRST_COMPLETED,
+            )
+            raise_if_cancelled(cancel_token)
+            for future in done:
+                domain, provider = futures[future]
+                try:
+                    selected = future.result()[: provider.max_results]
+                except OperationCancelledError:
+                    raise
+                except Exception as exc:
+                    log.warning(
+                        "Evidence source %s failed for %s: %s",
+                        provider.name,
+                        domain,
+                        redact_provider_text(exc, provider),
+                    )
+                    continue
+                output[domain].extend(selected)
+                collected.extend(selected)
+    except OperationCancelledError:
+        cancelled = True
+        cancel_pending(futures)
+        raise
     finally:
         for executor in executors:
-            executor.shutdown(wait=True, cancel_futures=False)
+            # Do not leave an in-flight source request running after the caller
+            # treats the job as cancelled and potentially starts it again.
+            executor.shutdown(wait=True, cancel_futures=cancelled)
 
     if collected:
         save_research_findings(
@@ -327,9 +367,11 @@ def _run_provider(
 def _run_provider_with_retries(
     domain: str,
     provider: ResearchProviderOptions,
+    cancel_token: CancellationToken | None = None,
 ) -> list[ResearchFinding]:
     attempts = max(1, load_options().llm.max_retries + 1)
     for attempt in range(attempts):
+        raise_if_cancelled(cancel_token)
         try:
             findings = _run_provider(domain, provider)
         except requests.HTTPError as exc:
@@ -345,6 +387,7 @@ def _run_provider_with_retries(
             if attempt + 1 >= attempts:
                 raise
         else:
+            raise_if_cancelled(cancel_token)
             register_provider_success(provider)
             return findings
     raise RuntimeError(f"Evidence source {provider.name} exhausted its retries")

@@ -8,6 +8,11 @@ from typing import Any
 
 import requests
 
+from pihole_manager.cancellation import (
+    CancellationToken,
+    OperationCancelledError,
+    raise_if_cancelled,
+)
 from pihole_manager.config import LLMOptions, LLMProviderOptions, load_options
 from pihole_manager.http_retry import retry_delay_from_headers
 from pihole_manager.models import ProviderUsage
@@ -114,12 +119,14 @@ def request_provider_text(
     *,
     response_format: dict[str, Any] | None = None,
     request_context: ProviderRequestContext | None = None,
+    cancel_token: CancellationToken | None = None,
 ) -> str:
     return request_provider(
         provider,
         messages,
         response_format=response_format,
         request_context=request_context,
+        cancel_token=cancel_token,
     ).text
 
 
@@ -129,13 +136,16 @@ def request_provider(
     *,
     response_format: dict[str, Any] | None = None,
     request_context: ProviderRequestContext | None = None,
+    cancel_token: CancellationToken | None = None,
 ) -> ProviderResponse:
+    raise_if_cancelled(cancel_token)
     started_at = time.monotonic()
     if provider.api_style == "anthropic_messages":
         response = _request_anthropic(
             provider,
             messages,
             request_context=request_context,
+            cancel_token=cancel_token,
         )
         data = response.json()
         text = _extract_anthropic_text(data)
@@ -145,6 +155,7 @@ def request_provider(
             messages,
             response_format=response_format,
             request_context=request_context,
+            cancel_token=cancel_token,
         )
         data = response.json()
         text = _extract_openai_text(data)
@@ -162,6 +173,7 @@ def _request_openai_compatible(
     *,
     response_format: dict[str, Any] | None,
     request_context: ProviderRequestContext | None,
+    cancel_token: CancellationToken | None,
 ) -> requests.Response:
     payload: dict[str, Any] = {
         "model": provider.model,
@@ -180,6 +192,7 @@ def _request_openai_compatible(
         json=payload,
         headers=_headers(provider),
         request_context=request_context,
+        cancel_token=cancel_token,
     )
     return response
 
@@ -189,6 +202,7 @@ def _request_anthropic(
     messages: Sequence[Mapping[str, str]],
     *,
     request_context: ProviderRequestContext | None,
+    cancel_token: CancellationToken | None,
 ) -> requests.Response:
     system_parts = [
         str(item.get("content") or "") for item in messages if item.get("role") == "system"
@@ -214,6 +228,7 @@ def _request_anthropic(
         json=payload,
         headers=_headers(provider),
         request_context=request_context,
+        cancel_token=cancel_token,
     )
     return response
 
@@ -224,6 +239,7 @@ def _request_with_retries(
     url: str,
     *,
     request_context: ProviderRequestContext | None = None,
+    cancel_token: CancellationToken | None = None,
     **kwargs: Any,
 ) -> requests.Response:
     options = request_context.llm_options if request_context is not None else load_options().llm
@@ -232,7 +248,12 @@ def _request_with_retries(
     last_error: Exception | None = None
 
     for attempt in range(attempts):
-        _wait_for_request_slot(provider, options.min_request_interval_sec)
+        raise_if_cancelled(cancel_token)
+        _wait_for_request_slot(
+            provider,
+            options.min_request_interval_sec,
+            cancel_token=cancel_token,
+        )
         reservation = None
         if request_context is not None:
             reservation = wait_for_quota(
@@ -241,12 +262,19 @@ def _request_with_retries(
                 request_context.estimate,
                 pool_id=request_context.pool_id,
                 llm_options=request_context.llm_options,
+                cancel_token=cancel_token,
             )
         try:
+            raise_if_cancelled(cancel_token)
             response = request(url, **kwargs)
-        except (requests.ConnectionError, requests.Timeout) as exc:
-            if reservation is not None and request_context is not None:
+        except OperationCancelledError:
+            if reservation is not None:
                 cancel_quota(reservation)
+            raise
+        except (requests.ConnectionError, requests.Timeout) as exc:
+            if reservation is not None:
+                cancel_quota(reservation)
+            raise_if_cancelled(cancel_token)
             last_error = exc
             _register_transient_failure(provider, attempt)
             if attempt + 1 >= attempts:
@@ -266,6 +294,7 @@ def _request_with_retries(
                     response_headers=getattr(response, "headers", {}),
                 )
             delay = _register_response_failure(provider, response, attempt)
+            raise_if_cancelled(cancel_token)
             if attempt + 1 < attempts:
                 continue
             if status_code == 429:
@@ -297,6 +326,7 @@ def _request_with_retries(
                 profile=request_context.profile,
                 response_headers=getattr(response, "headers", {}),
             )
+        raise_if_cancelled(cancel_token)
         _register_success(provider)
         return response
 
@@ -305,7 +335,12 @@ def _request_with_retries(
     raise RuntimeError("Provider request failed without a response")
 
 
-def _wait_for_request_slot(provider: LLMProviderOptions, configured_minimum: float) -> None:
+def _wait_for_request_slot(
+    provider: LLMProviderOptions,
+    configured_minimum: float,
+    *,
+    cancel_token: CancellationToken | None = None,
+) -> None:
     key = _provider_key(provider)
     base_interval = max(0.0, float(configured_minimum))
     while True:
@@ -317,7 +352,10 @@ def _wait_for_request_slot(provider: LLMProviderOptions, configured_minimum: flo
                 interval = max(base_interval, state.adaptive_interval)
                 state.next_request_at = now + interval
                 return
-        time.sleep(delay)
+        if cancel_token is None:
+            time.sleep(delay)
+        elif cancel_token.wait(delay):
+            cancel_token.raise_if_cancelled()
 
 
 def _register_transient_failure(provider: LLMProviderOptions, attempt: int) -> float:

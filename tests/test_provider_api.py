@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import threading
+import time
 from typing import Any
 
 import pytest
 import requests
 
+from pihole_manager.cancellation import CancellationToken, OperationCancelledError
 from pihole_manager.config import LLMOptions, LLMProviderOptions
 from pihole_manager.http_retry import retry_delay_from_headers
 from pihole_manager.provider_api import (
@@ -95,6 +98,62 @@ def test_openai_compatible_urls() -> None:
     provider = LLMProviderOptions(base_url="https://api.example/v1")
     assert chat_url(provider) == "https://api.example/v1/chat/completions"
     assert models_url(provider) == "https://api.example/v1/models"
+
+
+def test_provider_rate_wait_is_cooperatively_cancelled_before_http(monkeypatch) -> None:
+    from pihole_manager import provider_api
+    from pihole_manager.config import Options
+
+    provider_api._RATE_STATES.clear()
+    options = Options()
+    options.llm.min_request_interval_sec = 0
+    options.llm.max_retries = 0
+    monkeypatch.setattr(provider_api, "load_options", lambda: options)
+    called = threading.Event()
+
+    def unexpected_post(*_args, **_kwargs):
+        called.set()
+        raise AssertionError("HTTP must not start after cancellation")
+
+    monkeypatch.setattr(provider_api.requests, "post", unexpected_post)
+    provider = LLMProviderOptions(
+        provider_id="cancel-wait",
+        base_url="https://api.example/v1",
+        model="test",
+    )
+    provider_api._RATE_STATES[provider_api._provider_key(provider)] = (
+        provider_api._ProviderRateState(next_request_at=time.monotonic() + 30)
+    )
+    wait_started = threading.Event()
+
+    class ObservedToken(CancellationToken):
+        def wait(self, timeout: float) -> bool:
+            wait_started.set()
+            return super().wait(timeout)
+
+    token = ObservedToken()
+    errors: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            request_provider_text(
+                provider,
+                [{"role": "user", "content": "Classify"}],
+                cancel_token=token,
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    assert wait_started.wait(1)
+    token.cancel()
+    thread.join(2)
+
+    assert not thread.is_alive()
+    assert not called.is_set()
+    assert len(errors) == 1
+    assert isinstance(errors[0], OperationCancelledError)
 
 
 def test_anthropic_urls() -> None:

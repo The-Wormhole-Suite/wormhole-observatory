@@ -10,6 +10,7 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote, quote_plus
 
 import requests
 
@@ -283,11 +284,15 @@ def fetch_cached_bytes(
     accept: str,
 ) -> bytes:
     resolved_url = resolve_url_template(url, provider.api_key)
-    cache_id = hashlib.sha256(f"{provider.kind}\0{resolved_url}".encode()).hexdigest()
-    payload_path = cache_directory() / f"{cache_id}.bin"
-    meta_path = cache_directory() / f"{cache_id}.json"
+    cache_root = cache_directory()
+    _scrub_cached_metadata_secret(cache_root, provider.api_key)
+    cache_identity_url = redact_provider_text(url, provider)
+    cache_id = hashlib.sha256(f"{provider.kind}\0{cache_identity_url}".encode()).hexdigest()
+    payload_path = cache_root / f"{cache_id}.bin"
+    meta_path = cache_root / f"{cache_id}.json"
     with _cache_lock(cache_id):
         metadata = _read_metadata(meta_path)
+        metadata = _redact_metadata(metadata, provider.api_key)
         max_age = provider.refresh_interval_hours * 3600
         if payload_path.exists() and time.time() - metadata.get("fetched_at", 0) < max_age:
             return payload_path.read_bytes()
@@ -298,23 +303,31 @@ def fetch_cached_bytes(
         if metadata.get("last_modified"):
             headers["If-Modified-Since"] = str(metadata["last_modified"])
         wait_for_provider(provider)
-        response = requests.get(
-            resolved_url,
-            headers=headers,
-            timeout=provider.timeout_sec,
-            allow_redirects=True,
-        )
+        try:
+            response = requests.get(
+                resolved_url,
+                headers=headers,
+                timeout=provider.timeout_sec,
+                allow_redirects=True,
+            )
+        except requests.RequestException as exc:
+            sanitize_provider_exception(exc, provider)
+            raise
         if response.status_code == 304 and payload_path.exists():
             metadata["fetched_at"] = time.time()
             _write_metadata(meta_path, metadata)
             return payload_path.read_bytes()
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            sanitize_provider_exception(exc, provider)
+            raise
         payload = response.content
         _atomic_write(payload_path, payload)
         _write_metadata(
             meta_path,
             {
-                "url": resolved_url,
+                "url": cache_identity_url,
                 "fetched_at": time.time(),
                 "etag": response.headers.get("ETag", ""),
                 "last_modified": response.headers.get("Last-Modified", ""),
@@ -336,6 +349,74 @@ def resolve_url_template(url: str, api_key: str) -> str:
             raise ResearchError("This evidence source requires an API key")
         value = value.replace("{api_key}", api_key.strip())
     return value
+
+
+def redact_provider_text(value: object, provider: ResearchProviderOptions) -> str:
+    return _redact_secret_text(str(value), provider.api_key)
+
+
+def sanitize_provider_exception(
+    exc: requests.RequestException,
+    provider: ResearchProviderOptions,
+) -> None:
+    exc.args = tuple(
+        _redact_secret_text(value, provider.api_key) if isinstance(value, str) else value
+        for value in exc.args
+    )
+    response = getattr(exc, "response", None)
+    request = getattr(exc, "request", None)
+    _redact_request_url(request, provider.api_key)
+    if response is not None:
+        if getattr(response, "url", None):
+            response.url = _redact_secret_text(str(response.url), provider.api_key)
+        _redact_request_url(getattr(response, "request", None), provider.api_key)
+        for previous in getattr(response, "history", ()):
+            if getattr(previous, "url", None):
+                previous.url = _redact_secret_text(str(previous.url), provider.api_key)
+            _redact_request_url(getattr(previous, "request", None), provider.api_key)
+
+
+def _redact_request_url(request: object, api_key: str) -> None:
+    if request is not None and getattr(request, "url", None):
+        request.url = _redact_secret_text(str(request.url), api_key)
+
+
+def _redact_secret_text(value: str, api_key: str) -> str:
+    secret = api_key.strip()
+    if not secret:
+        return value
+    redacted = value
+    variants = {
+        secret,
+        quote(secret, safe=""),
+        quote_plus(secret, safe=""),
+    }
+    for variant in sorted(variants, key=len, reverse=True):
+        if variant:
+            redacted = redacted.replace(variant, "***")
+    return redacted
+
+
+def _redact_metadata(value: Any, api_key: str) -> Any:
+    if isinstance(value, dict):
+        return {key: _redact_metadata(item, api_key) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_redact_metadata(item, api_key) for item in value]
+    if isinstance(value, str):
+        return _redact_secret_text(value, api_key)
+    return value
+
+
+def _scrub_cached_metadata_secret(cache_root: Path, api_key: str) -> None:
+    if not api_key.strip():
+        return
+    for path in cache_root.glob("*.json"):
+        metadata = _read_metadata(path)
+        if not metadata:
+            continue
+        redacted = _redact_metadata(metadata, api_key)
+        if redacted != metadata:
+            _write_metadata(path, redacted)
 
 
 def safe_cache_name(value: str) -> str:

@@ -46,7 +46,7 @@ def analysis_run_finish(
 ) -> None:
     now = int(time.time())
     selected_status = status.strip().lower()
-    if selected_status not in {"completed", "completed_with_errors", "failed"}:
+    if selected_status not in {"completed", "completed_with_errors", "failed", "cancelled"}:
         selected_status = "failed" if error else "completed"
     with _DB_LOCK, _connection() as connection:
         connection.execute(
@@ -250,24 +250,33 @@ def benchmark_result_save(
         )
 
 
-def benchmark_run_finish(run_id: str) -> None:
+def benchmark_run_finish(
+    run_id: str,
+    *,
+    status: str = "",
+    error: str = "",
+) -> None:
     with _DB_LOCK, _connection() as connection:
-        failed = connection.execute(
-            """
-            SELECT COUNT(*) AS count
-            FROM model_benchmark_results
-            WHERE run_id = ? AND status != 'completed'
-            """,
-            (run_id,),
-        ).fetchone()
-        status = "completed_with_errors" if int(failed["count"] or 0) else "completed"
+        selected_status = status.strip().lower()
+        if selected_status not in {"completed", "completed_with_errors", "failed", "cancelled"}:
+            failed = connection.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM model_benchmark_results
+                WHERE run_id = ? AND status != 'completed'
+                """,
+                (run_id,),
+            ).fetchone()
+            selected_status = (
+                "completed_with_errors" if int(failed["count"] or 0) else "completed"
+            )
         connection.execute(
             """
             UPDATE model_benchmark_runs
-            SET status = ?, completed_at = ?
+            SET status = ?, error = ?, completed_at = ?
             WHERE id = ?
             """,
-            (status, int(time.time()), run_id),
+            (selected_status, error[:2000], int(time.time()), run_id),
         )
 
 
