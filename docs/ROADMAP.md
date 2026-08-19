@@ -14,7 +14,7 @@
 - [x] source-quality scoring and contradiction detection
 - [x] locally indexed additional list repositories with provenance
 - [x] URLhaus integration after its authenticated feed contract is implemented and tested
-- licensing review before enabling non-commercial datasets in distributed builds
+- [x] licensing review before enabling non-commercial datasets in distributed builds
 - certificate-transparency and additional reputation adapters
 - provider-native browsing support for LLMs that can cite primary sources
 - evidence citations in every generated description
