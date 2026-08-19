@@ -48,8 +48,6 @@ _REPOSITORY_LIST_SOURCES: tuple[RepositoryListSource, ...] = (
             "https://raw.githubusercontent.com/hagezi/dns-blocklists/"
             "main/adblock/tif.mini.txt"
         ),
-        license_id="GPL-3.0",
-        license_review_required=False,
         signal_type="security",
         verdict="suspicious",
         confidence=0.92,
@@ -69,8 +67,6 @@ _REPOSITORY_LIST_SOURCES: tuple[RepositoryListSource, ...] = (
             "https://raw.githubusercontent.com/easylist/easylist/"
             "master/easyprivacy/easyprivacy_trackingservers.txt"
         ),
-        license_id="UPSTREAM-LICENSE-PAGE",
-        license_review_required=True,
         signal_type="privacy",
         verdict="tracker",
         confidence=0.9,
