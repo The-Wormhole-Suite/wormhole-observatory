@@ -21,6 +21,12 @@ from pihole_manager.database import (
     research_findings_get,
     save_research_findings,
 )
+from pihole_manager.evidence_quality import (
+    annotate_source_kind,
+    detect_contradictions,
+    quality_summary,
+    score_finding,
+)
 from pihole_manager.models import ResearchFinding
 from pihole_manager.research_catalogs import (
     research_adguard_services,
@@ -289,7 +295,10 @@ def research_many(
             for future in done:
                 domain, provider = futures[future]
                 try:
-                    selected = future.result()[: provider.max_results]
+                    selected = [
+                        annotate_source_kind(item, provider.kind)
+                        for item in future.result()[: provider.max_results]
+                    ]
                 except OperationCancelledError:
                     raise
                 except Exception as exc:
@@ -340,16 +349,20 @@ def research_context(
     visible.sort(
         key=lambda item: (
             not item.decision_relevant,
+            -score_finding(item).evidence_score,
             -float(item.confidence),
             -int(item.retrieved_at),
         )
     )
+    contradictions = detect_contradictions(visible)
     prompt_findings = visible[:_MAX_PROMPT_FINDINGS]
     return {
         "domain": normalized,
         "finding_count": len(visible),
         "decision_relevant_count": sum(1 for item in visible if item.decision_relevant),
         "omitted_count": max(0, len(visible) - len(prompt_findings)),
+        "quality": quality_summary(visible, contradictions),
+        "contradictions": [item.as_dict() for item in contradictions],
         "findings": [_compact_finding(item) for item in prompt_findings],
     }
 
@@ -394,6 +407,7 @@ def _run_provider_with_retries(
 
 
 def _compact_finding(item: ResearchFinding) -> dict[str, Any]:
+    quality = score_finding(item)
     return {
         "provider": item.provider,
         "kind": item.kind,
@@ -404,6 +418,9 @@ def _compact_finding(item: ResearchFinding) -> dict[str, Any]:
         "summary": item.summary[:_MAX_SUMMARY_LENGTH],
         "source_url": item.source_url,
         "confidence": round(float(item.confidence), 3),
+        "source_quality": round(quality.source_score, 3),
+        "evidence_quality": round(quality.evidence_score, 3),
+        "quality_tier": quality.tier,
         "retrieved_at": item.retrieved_at,
     }
 
