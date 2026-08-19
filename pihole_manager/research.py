@@ -28,6 +28,7 @@ from pihole_manager.evidence_quality import (
     score_finding,
 )
 from pihole_manager.models import ResearchFinding
+from pihole_manager.repository_lists import research_repository_lists
 from pihole_manager.research_catalogs import (
     research_adguard_services,
     research_disconnect_tracking,
@@ -84,6 +85,7 @@ _TEST_DOMAINS = {
     "phishtank": "example.com",
     "urlscan": "google.com",
     "cloudflare_radar": "google.com",
+    "repository_lists": "example.com",
 }
 
 _PROVIDER_HANDLERS: dict[
@@ -101,6 +103,7 @@ _PROVIDER_HANDLERS: dict[
     "phishtank": research_phishtank,
     "urlscan": research_urlscan,
     "cloudflare_radar": research_cloudflare_radar,
+    "repository_lists": research_repository_lists,
 }
 
 

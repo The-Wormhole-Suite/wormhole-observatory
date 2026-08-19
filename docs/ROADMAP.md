@@ -12,7 +12,7 @@
 ## Priority 2: Evidence quality
 
 - [x] source-quality scoring and contradiction detection
-- locally indexed additional list repositories with provenance
+- [x] locally indexed additional list repositories with provenance
 - URLhaus integration after its authenticated feed contract is implemented and tested
 - licensing review before enabling non-commercial datasets in distributed builds
 - certificate-transparency and additional reputation adapters
