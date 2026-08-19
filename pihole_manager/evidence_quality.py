@@ -19,6 +19,8 @@ _SOURCE_BASE_SCORES: dict[str, float] = {
     "cloudflare_radar": 0.84,
     "urlscan": 0.80,
     "netcraft": 0.70,
+    "hagezi_tif_mini": 0.92,
+    "easyprivacy_trackingservers": 0.91,
 }
 
 _EVIDENCE_KIND_TO_SOURCE_KIND: dict[str, str] = {
