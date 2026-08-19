@@ -594,6 +594,15 @@ class Options:
                 min_interval_sec=1.0,
                 refresh_interval_hours=168,
             ),
+            ResearchProviderOptions(
+                name="Curated repository blocklists",
+                kind="repository_lists",
+                enabled=False,
+                min_interval_sec=0.0,
+                refresh_interval_hours=12,
+                max_results=5,
+                test_domain="example.com",
+            ),
         ]
     )
     ui: UIOptions = field(default_factory=UIOptions)
@@ -855,6 +864,7 @@ def _migrate(raw: dict[str, Any]) -> dict[str, Any]:
         "phishtank",
         "urlscan",
         "cloudflare_radar",
+        "repository_lists",
     }
     for raw_provider in data.get("research_providers") or []:
         if not isinstance(raw_provider, dict):
@@ -1450,6 +1460,7 @@ def _validate(options: Options) -> Options:
         "phishtank",
         "urlscan",
         "cloudflare_radar",
+        "repository_lists",
     }
     options.research_providers = [
         provider
