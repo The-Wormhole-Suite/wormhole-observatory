@@ -3,8 +3,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from pihole6api.health import ConnectionHealth, ConnectionState
-from pihole_manager.config import PiHoleOptions
 from pihole_manager import pihole_service
+from pihole_manager.config import PiHoleOptions
 from pihole_manager.pihole_service import _extract_version
 
 

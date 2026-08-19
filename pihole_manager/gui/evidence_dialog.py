@@ -7,12 +7,14 @@ from tkinter import ttk
 from typing import Any
 
 from pihole_manager.database import research_findings_get
+from pihole_manager.evidence_quality import detect_contradictions, score_finding
 
 _COLUMNS = (
     "source",
     "signal",
     "verdict",
     "confidence",
+    "quality",
     "decision",
     "collected",
     "expires",
@@ -24,6 +26,7 @@ _HEADINGS = {
     "signal": "Signal",
     "verdict": "Verdict",
     "confidence": "Confidence",
+    "quality": "Evidence quality",
     "decision": "Policy evidence",
     "collected": "Collected",
     "expires": "Fresh until",
@@ -49,6 +52,7 @@ def show_evidence(parent: tk.Misc, domain: str) -> None:
     positive.sort(
         key=lambda item: (
             not bool(item.get("decision_relevant")),
+            -score_finding(item).evidence_score,
             -float(item.get("confidence") or 0.0),
             -int(item.get("retrieved_at") or 0),
             str(item.get("provider") or "").casefold(),
@@ -64,10 +68,12 @@ def show_evidence(parent: tk.Misc, domain: str) -> None:
     header = ttk.Frame(dialog, padding=(10, 10, 10, 6))
     header.pack(fill="x")
     decision_count = sum(1 for item in positive if item.get("decision_relevant"))
+    contradictions = detect_contradictions(positive)
     ttk.Label(
         header,
         text=(
-            f"{domain} · {len(positive)} relevant finding(s) · {decision_count} policy signal(s)"
+            f"{domain} · {len(positive)} relevant finding(s) · {decision_count} policy signal(s) "
+            f"· {len(contradictions)} contradiction(s)"
         ),
     ).pack(side="left")
     ttk.Button(header, text="Close", command=dialog.destroy).pack(side="right")
@@ -76,6 +82,17 @@ def show_evidence(parent: tk.Misc, domain: str) -> None:
         ttk.Label(
             dialog,
             text="Checked without a match: " + ", ".join(no_match_sources),
+            wraplength=1060,
+            justify="left",
+        ).pack(fill="x", padx=10, pady=(0, 6))
+
+    if contradictions:
+        preview = "; ".join(item.reason for item in contradictions[:3])
+        if len(contradictions) > 3:
+            preview += f"; +{len(contradictions) - 3} more"
+        ttk.Label(
+            dialog,
+            text="Conflicting evidence: " + preview,
             wraplength=1060,
             justify="left",
         ).pack(fill="x", padx=10, pady=(0, 6))
@@ -98,6 +115,7 @@ def show_evidence(parent: tk.Misc, domain: str) -> None:
         "signal": 105,
         "verdict": 135,
         "confidence": 85,
+        "quality": 110,
         "decision": 95,
         "collected": 125,
         "expires": 125,
@@ -110,7 +128,7 @@ def show_evidence(parent: tk.Misc, domain: str) -> None:
             width=widths[column],
             minwidth=65,
             anchor="center"
-            if column in {"confidence", "decision", "collected", "expires"}
+            if column in {"confidence", "quality", "decision", "collected", "expires"}
             else "w",
             stretch=column == "summary",
         )
@@ -119,6 +137,7 @@ def show_evidence(parent: tk.Misc, domain: str) -> None:
     for index, item in enumerate(positive):
         iid = str(index)
         rows[iid] = item
+        quality = score_finding(item)
         tree.insert(
             "",
             "end",
@@ -128,6 +147,7 @@ def show_evidence(parent: tk.Misc, domain: str) -> None:
                 item.get("signal_type", "context"),
                 item.get("verdict", "unknown"),
                 f"{float(item.get('confidence') or 0.0):.2f}",
+                f"{quality.evidence_score:.2f} ({quality.tier.replace('_', ' ')})",
                 "yes" if item.get("decision_relevant") else "no",
                 _format_timestamp(item.get("retrieved_at")),
                 _format_timestamp(item.get("expires_at")),
@@ -197,6 +217,14 @@ def _finding_text(item: dict[str, Any]) -> str:
         parts.append(title)
     if summary and summary != title:
         parts.append(summary)
+    quality = score_finding(item)
+    parts.append(
+        "Quality: "
+        f"source={quality.source_score:.2f}, "
+        f"evidence={quality.evidence_score:.2f}, "
+        f"tier={quality.tier.replace('_', ' ')}, "
+        f"source kind={quality.source_kind}"
+    )
     source_url = str(item.get("source_url") or "").strip()
     if source_url:
         parts.append(f"Source: {source_url}")
