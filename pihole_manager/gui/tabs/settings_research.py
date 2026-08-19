@@ -7,6 +7,7 @@ from collections.abc import Callable
 from tkinter import messagebox, simpledialog, ttk
 
 from pihole_manager.config import Options, ResearchProviderOptions
+from pihole_manager.evidence_licensing import source_license_policy
 from pihole_manager.gui.tooltips import TooltipSupport
 from pihole_manager.research import EvidenceSourceTestResult, test_research_provider
 from pihole_manager.research_common import source_definition, source_definitions
@@ -343,6 +344,19 @@ class ResearchSettingsPage(TooltipSupport, ttk.Frame):
             notes.append("API key required.")
         if definition.license_note:
             notes.append(f"License/usage note: {definition.license_note}")
+        license_policy = source_license_policy(definition.kind)
+        if license_policy is not None:
+            notes.append(
+                "Reviewed usage: "
+                f"{license_policy.license_id}; "
+                f"commercial={license_policy.commercial_use}; "
+                f"reviewed {license_policy.reviewed_at}."
+            )
+            if not license_policy.release_default_eligible:
+                notes.append(
+                    "Release policy: opt-in only; this source must not be enabled "
+                    "in distributed defaults."
+                )
         if definition.experimental:
             notes.append("Experimental adapter: access or page layout may change without notice.")
         self.source_metadata.configure(text="\n".join(notes))

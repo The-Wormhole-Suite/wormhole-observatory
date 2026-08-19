@@ -6,6 +6,9 @@ import platform
 import shutil
 from pathlib import Path
 
+from pihole_manager.config import Options
+from pihole_manager.evidence_licensing import distribution_license_issues
+
 
 def _architecture() -> str:
     machine = platform.machine().lower()
@@ -16,12 +19,28 @@ def _architecture() -> str:
     raise RuntimeError(f"Unsupported CPU architecture: {machine}")
 
 
+def _validate_evidence_license_defaults() -> None:
+    enabled_kinds = [
+        provider.kind
+        for provider in Options().research_providers
+        if provider.enabled
+    ]
+    issues = distribution_license_issues(enabled_kinds)
+    if issues:
+        formatted = "\n- ".join(issues)
+        raise RuntimeError(
+            "Evidence-source release defaults failed the licensing gate:\n- "
+            + formatted
+        )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Package a Pi-hole Manager Onedir build")
     parser.add_argument("--platform", choices=("windows", "linux"), required=True)
     parser.add_argument("--output-dir", default="release")
     args = parser.parse_args()
 
+    _validate_evidence_license_defaults()
     project_root = Path(__file__).resolve().parent
     source = project_root / "dist" / "Pi-Hole-Manager"
     if not source.is_dir():

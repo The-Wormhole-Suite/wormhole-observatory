@@ -8,6 +8,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from pihole_manager.config import ResearchProviderOptions
+from pihole_manager.evidence_licensing import (
+    EvidenceLicensePolicy,
+    repository_list_license_policy,
+)
 from pihole_manager.models import ResearchFinding
 from pihole_manager.research_catalogs import _cached_index, _lookup_suffixes
 from pihole_manager.research_common import fetch_cached_bytes, negative_finding, normalize_domain
@@ -23,8 +27,6 @@ class RepositoryListSource:
     repository_ref: str
     list_path: str
     raw_url: str
-    license_id: str
-    license_review_required: bool
     signal_type: str
     verdict: str
     confidence: float
@@ -73,8 +75,8 @@ _REPOSITORY_LIST_SOURCES: tuple[RepositoryListSource, ...] = (
         verdict="tracker",
         confidence=0.9,
         description=(
-            "EasyPrivacy identifies tracking infrastructure. Distribution remains disabled "
-            "until the upstream licence terms have been reviewed for this application."
+            "EasyPrivacy identifies tracking infrastructure. Its upstream repository licence "
+            "has been reviewed and is recorded in the evidence provenance."
         ),
     ),
 )
@@ -85,9 +87,14 @@ def research_repository_lists(
     provider: ResearchProviderOptions,
 ) -> list[ResearchFinding]:
     normalized = normalize_domain(domain)
-    matches: list[tuple[RepositoryListSource, dict[str, Any]]] = []
+    matches: list[
+        tuple[RepositoryListSource, EvidenceLicensePolicy, dict[str, Any]]
+    ] = []
 
     for source in _REPOSITORY_LIST_SOURCES:
+        license_policy = repository_list_license_policy(source.source_id)
+        if license_policy is None or license_policy.review_required:
+            continue
         payload = fetch_cached_bytes(provider, source.raw_url, accept="text/plain")
         index = _cached_index(
             f"repository-list:{source.source_id}",
@@ -95,7 +102,7 @@ def research_repository_lists(
             _build_repository_list_index,
         )
         for item in _lookup_suffixes(normalized, index):
-            matches.append((source, item))
+            matches.append((source, license_policy, item))
 
     if not matches:
         return [
@@ -112,7 +119,7 @@ def research_repository_lists(
 
     now = int(time.time())
     findings: list[ResearchFinding] = []
-    for source, item in matches[: provider.max_results]:
+    for source, license_policy, item in matches[: provider.max_results]:
         matched_domain = str(item.get("matched_domain") or normalized)
         line_number = int(item.get("line_number") or 0)
         raw_data = {
@@ -122,8 +129,13 @@ def research_repository_lists(
             "repository_ref": source.repository_ref,
             "list_path": source.list_path,
             "list_url": source.raw_url,
-            "license_id": source.license_id,
-            "license_review_required": source.license_review_required,
+            "license_id": license_policy.license_id,
+            "license_url": license_policy.license_url,
+            "license_commercial_use": license_policy.commercial_use,
+            "license_redistribution": license_policy.redistribution,
+            "license_reviewed_at": license_policy.reviewed_at,
+            "license_review_required": license_policy.review_required,
+            "release_default_eligible": license_policy.release_default_eligible,
             "wormhole_source_kind": source.source_id,
         }
         findings.append(
