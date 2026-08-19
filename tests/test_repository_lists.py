@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from pihole_manager.config import ResearchProviderOptions
+from pihole_manager.config import Options, ResearchProviderOptions
+from pihole_manager.evidence_quality import score_finding
 from pihole_manager.repository_lists import (
     _build_repository_list_index,
     _domain_from_repository_rule,
@@ -92,3 +93,33 @@ def test_repository_lookup_treats_no_match_as_neutral(monkeypatch) -> None:
     assert findings[0].verdict == "no_match"
     assert findings[0].decision_relevant is False
     assert findings[0].raw_data["include_in_prompt"] is False
+
+
+def test_repository_provider_is_available_but_disabled_by_default() -> None:
+    provider = next(
+        item for item in Options().research_providers if item.kind == "repository_lists"
+    )
+
+    assert provider.enabled is False
+    assert provider.refresh_interval_hours == 12
+
+
+def test_repository_match_uses_source_specific_quality(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "pihole_manager.repository_lists.fetch_cached_bytes",
+        lambda _provider, url, **_kwargs: (
+            b"||bad.example^\n" if "hagezi" in url else b""
+        ),
+    )
+    provider = ResearchProviderOptions(
+        name="Repository lists",
+        kind="repository_lists",
+        enabled=True,
+    )
+
+    finding = research_repository_lists("bad.example", provider)[0]
+    quality = score_finding(finding, now=finding.retrieved_at)
+
+    assert quality.source_kind == "hagezi_tif_mini"
+    assert quality.source_score == 0.92
+    assert quality.tier == "very_high"
