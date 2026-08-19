@@ -52,6 +52,7 @@ from pihole_manager.research_lookups import (
     research_urlscan,
     research_virustotal,
 )
+from pihole_manager.research_urlhaus import research_urlhaus
 
 log = logging.getLogger(__name__)
 _MAX_PROMPT_FINDINGS = 12
@@ -86,6 +87,7 @@ _TEST_DOMAINS = {
     "urlscan": "google.com",
     "cloudflare_radar": "google.com",
     "repository_lists": "example.com",
+    "urlhaus": "example.com",
 }
 
 _PROVIDER_HANDLERS: dict[
@@ -104,6 +106,7 @@ _PROVIDER_HANDLERS: dict[
     "urlscan": research_urlscan,
     "cloudflare_radar": research_cloudflare_radar,
     "repository_lists": research_repository_lists,
+    "urlhaus": research_urlhaus,
 }
 
 

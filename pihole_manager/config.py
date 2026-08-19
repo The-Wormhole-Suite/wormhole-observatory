@@ -603,6 +603,16 @@ class Options:
                 max_results=5,
                 test_domain="example.com",
             ),
+            ResearchProviderOptions(
+                name="URLhaus host lookup",
+                kind="urlhaus",
+                enabled=False,
+                base_url="https://urlhaus-api.abuse.ch/v1",
+                min_interval_sec=1.0,
+                refresh_interval_hours=6,
+                max_results=5,
+                test_domain="example.com",
+            ),
         ]
     )
     ui: UIOptions = field(default_factory=UIOptions)
@@ -865,6 +875,7 @@ def _migrate(raw: dict[str, Any]) -> dict[str, Any]:
         "urlscan",
         "cloudflare_radar",
         "repository_lists",
+        "urlhaus",
     }
     for raw_provider in data.get("research_providers") or []:
         if not isinstance(raw_provider, dict):
@@ -1461,6 +1472,7 @@ def _validate(options: Options) -> Options:
         "urlscan",
         "cloudflare_radar",
         "repository_lists",
+        "urlhaus",
     }
     options.research_providers = [
         provider

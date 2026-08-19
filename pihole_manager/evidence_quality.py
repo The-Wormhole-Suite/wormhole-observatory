@@ -21,6 +21,7 @@ _SOURCE_BASE_SCORES: dict[str, float] = {
     "netcraft": 0.70,
     "hagezi_tif_mini": 0.92,
     "easyprivacy_trackingservers": 0.91,
+    "urlhaus": 0.99,
 }
 
 _EVIDENCE_KIND_TO_SOURCE_KIND: dict[str, str] = {
@@ -35,6 +36,7 @@ _EVIDENCE_KIND_TO_SOURCE_KIND: dict[str, str] = {
     "domain_popularity": "cloudflare_radar",
     "archived_web_scan": "urlscan",
     "site_infrastructure": "netcraft",
+    "malware_url_host": "urlhaus",
 }
 
 # Contradictions are intentionally conservative. Missing detections are not evidence of safety,
