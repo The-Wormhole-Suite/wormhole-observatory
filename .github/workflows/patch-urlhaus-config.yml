@@ -1,0 +1,77 @@
+name: Patch URLhaus config
+
+on:
+  push:
+    branches:
+      - codex/urlhaus-auth-20260820
+    paths:
+      - .github/workflows/patch-urlhaus-config.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/urlhaus-auth-20260820
+          fetch-depth: 0
+      - name: Patch config
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path("pihole_manager/config.py")
+          text = path.read_text(encoding="utf-8")
+
+          provider = '''            ResearchProviderOptions(
+              name="URLhaus host lookup",
+              kind="urlhaus",
+              enabled=False,
+              base_url="https://urlhaus-api.abuse.ch/v1",
+              min_interval_sec=1.0,
+              refresh_interval_hours=6,
+              max_results=5,
+              test_domain="example.com",
+          ),
+          '''
+          anchor = '''            ResearchProviderOptions(
+              name="Curated repository blocklists",
+              kind="repository_lists",
+              enabled=False,
+              min_interval_sec=0.0,
+              refresh_interval_hours=12,
+              max_results=5,
+              test_domain="example.com",
+          ),
+          '''
+          if 'kind="urlhaus"' not in text:
+              if text.count(anchor) != 1:
+                  raise SystemExit("Expected exactly one repository-list default provider anchor")
+              text = text.replace(anchor, anchor + provider)
+
+          old = '        "repository_lists",\n    }'
+          new = '        "repository_lists",\n        "urlhaus",\n    }'
+          if '        "urlhaus",\n    }' not in text:
+              count = text.count(old)
+              if count != 2:
+                  raise SystemExit(f"Expected two supported-kind anchors, found {count}")
+              text = text.replace(old, new)
+
+          path.write_text(text, encoding="utf-8")
+      - name: Verify syntax
+        run: python -m py_compile pihole_manager/config.py
+      - name: Commit config patch
+        run: |
+          if git diff --quiet -- pihole_manager/config.py; then
+            echo "Config already patched"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add pihole_manager/config.py
+          git commit -m "Register URLhaus research provider"
+          git push origin HEAD:codex/urlhaus-auth-20260820
