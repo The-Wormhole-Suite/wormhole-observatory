@@ -1,0 +1,308 @@
+name: Patch evidence licensing integration
+
+on:
+  push:
+    branches:
+      - codex/evidence-licensing-20260820
+    paths:
+      - .github/workflows/patch-evidence-licensing.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/evidence-licensing-20260820
+          fetch-depth: 0
+      - name: Apply guarded patches
+        shell: python
+        run: |
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str, label: str) -> None:
+              file = Path(path)
+              text = file.read_text(encoding="utf-8")
+              if new in text:
+                  return
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected one anchor, found {count}")
+              file.write_text(text.replace(old, new), encoding="utf-8")
+
+          # research_common.py: expose the reviewed policy in provider snapshots.
+          replace_once(
+              "pihole_manager/research_common.py",
+              "from pihole_manager.config import ResearchProviderOptions, app_directory\n",
+              "from pihole_manager.config import ResearchProviderOptions, app_directory\n"
+              "from pihole_manager.evidence_licensing import source_license_policy\n",
+              "research_common import",
+          )
+          replace_once(
+              "pihole_manager/research_common.py",
+              '            "Per-source licensing applies; sources requiring review remain disabled.",\n',
+              '            "Per-source licences are reviewed and recorded in evidence provenance.",\n',
+              "repository-list source note",
+          )
+          old_snapshot = "\n".join(
+              (
+                  "    if definition:",
+                  "        snapshot.update(",
+                  "            {",
+                  '                "mode": definition.mode,',
+                  '                "sends_domain": definition.sends_domain,',
+                  '                "requires_api_key": definition.requires_api_key,',
+                  '                "experimental": definition.experimental,',
+                  '                "license_note": definition.license_note,',
+                  "            }",
+                  "        )",
+                  "    return snapshot",
+                  "",
+              )
+          )
+          new_snapshot = "\n".join(
+              (
+                  "    if definition:",
+                  "        snapshot.update(",
+                  "            {",
+                  '                "mode": definition.mode,',
+                  '                "sends_domain": definition.sends_domain,',
+                  '                "requires_api_key": definition.requires_api_key,',
+                  '                "experimental": definition.experimental,',
+                  '                "license_note": definition.license_note,',
+                  "            }",
+                  "        )",
+                  "    license_policy = source_license_policy(provider.kind)",
+                  "    if license_policy is not None:",
+                  '        snapshot["license_policy"] = asdict(license_policy)',
+                  "    return snapshot",
+                  "",
+              )
+          )
+          replace_once(
+              "pihole_manager/research_common.py",
+              old_snapshot,
+              new_snapshot,
+              "provider snapshot licensing",
+          )
+
+          # repository_lists.py: make the central policy authoritative and fail closed.
+          replace_once(
+              "pihole_manager/repository_lists.py",
+              "from pihole_manager.config import ResearchProviderOptions\n",
+              "from pihole_manager.config import ResearchProviderOptions\n"
+              "from pihole_manager.evidence_licensing import (\n"
+              "    EvidenceLicensePolicy,\n"
+              "    repository_list_license_policy,\n"
+              ")\n",
+              "repository-list licensing import",
+          )
+          replace_once(
+              "pihole_manager/repository_lists.py",
+              "    raw_url: str\n"
+              "    license_id: str\n"
+              "    license_review_required: bool\n"
+              "    signal_type: str\n",
+              "    raw_url: str\n"
+              "    signal_type: str\n",
+              "repository-list dataclass fields",
+          )
+          for value in (
+              '        license_id="GPL-3.0",\n        license_review_required=False,\n',
+              '        license_id="UPSTREAM-LICENSE-PAGE",\n        license_review_required=True,\n',
+          ):
+              replace_once(
+                  "pihole_manager/repository_lists.py",
+                  value,
+                  "",
+                  "repository-list embedded licence metadata",
+              )
+          replace_once(
+              "pihole_manager/repository_lists.py",
+              "        description=(\n"
+              '            "EasyPrivacy identifies tracking infrastructure. Distribution remains disabled "\n'
+              '            "until the upstream licence terms have been reviewed for this application."\n'
+              "        ),\n",
+              "        description=(\n"
+              '            "EasyPrivacy identifies tracking infrastructure. Its upstream repository licence "\n'
+              '            "has been reviewed and is recorded in the evidence provenance."\n'
+              "        ),\n",
+              "EasyPrivacy description",
+          )
+          replace_once(
+              "pihole_manager/repository_lists.py",
+              "    matches: list[tuple[RepositoryListSource, dict[str, Any]]] = []\n\n"
+              "    for source in _REPOSITORY_LIST_SOURCES:\n"
+              "        payload = fetch_cached_bytes(provider, source.raw_url, accept=\"text/plain\")\n"
+              "        index = _cached_index(\n"
+              '            f"repository-list:{source.source_id}",\n'
+              "            payload,\n"
+              "            _build_repository_list_index,\n"
+              "        )\n"
+              "        for item in _lookup_suffixes(normalized, index):\n"
+              "            matches.append((source, item))\n",
+              "    matches: list[\n"
+              "        tuple[RepositoryListSource, EvidenceLicensePolicy, dict[str, Any]]\n"
+              "    ] = []\n\n"
+              "    for source in _REPOSITORY_LIST_SOURCES:\n"
+              "        license_policy = repository_list_license_policy(source.source_id)\n"
+              "        if license_policy is None or license_policy.review_required:\n"
+              "            continue\n"
+              "        payload = fetch_cached_bytes(provider, source.raw_url, accept=\"text/plain\")\n"
+              "        index = _cached_index(\n"
+              '            f"repository-list:{source.source_id}",\n'
+              "            payload,\n"
+              "            _build_repository_list_index,\n"
+              "        )\n"
+              "        for item in _lookup_suffixes(normalized, index):\n"
+              "            matches.append((source, license_policy, item))\n",
+              "repository-list policy gate",
+          )
+          replace_once(
+              "pihole_manager/repository_lists.py",
+              "    for source, item in matches[: provider.max_results]:\n",
+              "    for source, license_policy, item in matches[: provider.max_results]:\n",
+              "repository-list match tuple",
+          )
+          replace_once(
+              "pihole_manager/repository_lists.py",
+              '            "list_url": source.raw_url,\n'
+              '            "license_id": source.license_id,\n'
+              '            "license_review_required": source.license_review_required,\n'
+              '            "wormhole_source_kind": source.source_id,\n',
+              '            "list_url": source.raw_url,\n'
+              '            "license_id": license_policy.license_id,\n'
+              '            "license_url": license_policy.license_url,\n'
+              '            "license_commercial_use": license_policy.commercial_use,\n'
+              '            "license_redistribution": license_policy.redistribution,\n'
+              '            "license_reviewed_at": license_policy.reviewed_at,\n'
+              '            "license_review_required": license_policy.review_required,\n'
+              '            "release_default_eligible": license_policy.release_default_eligible,\n'
+              '            "wormhole_source_kind": source.source_id,\n',
+              "repository-list provenance licensing",
+          )
+
+          # Settings: surface reviewed licence status and release-default restrictions.
+          replace_once(
+              "pihole_manager/gui/tabs/settings_research.py",
+              "from pihole_manager.config import Options, ResearchProviderOptions\n",
+              "from pihole_manager.config import Options, ResearchProviderOptions\n"
+              "from pihole_manager.evidence_licensing import source_license_policy\n",
+              "settings licensing import",
+          )
+          replace_once(
+              "pihole_manager/gui/tabs/settings_research.py",
+              "        if definition.license_note:\n"
+              '            notes.append(f"License/usage note: {definition.license_note}")\n'
+              "        if definition.experimental:\n",
+              "        if definition.license_note:\n"
+              '            notes.append(f"License/usage note: {definition.license_note}")\n'
+              "        license_policy = source_license_policy(definition.kind)\n"
+              "        if license_policy is not None:\n"
+              "            notes.append(\n"
+              '                "Reviewed usage: "\n'
+              "                f\"{license_policy.license_id}; \"\n"
+              "                f\"commercial={license_policy.commercial_use}; \"\n"
+              "                f\"reviewed {license_policy.reviewed_at}.\"\n"
+              "            )\n"
+              "            if not license_policy.release_default_eligible:\n"
+              "                notes.append(\n"
+              '                    "Release policy: opt-in only; this source must not be enabled "\n'
+              '                    "in distributed defaults."\n'
+              "                )\n"
+              "        if definition.experimental:\n",
+              "settings licence metadata",
+          )
+
+          # Release builder: hard fail if unsafe evidence sources become enabled by default.
+          replace_once(
+              "build_release.py",
+              "from pathlib import Path\n",
+              "from pathlib import Path\n\n"
+              "from pihole_manager.config import Options\n"
+              "from pihole_manager.evidence_licensing import distribution_license_issues\n",
+              "release licensing imports",
+          )
+          replace_once(
+              "build_release.py",
+              "def main() -> int:\n",
+              "def _validate_evidence_license_defaults() -> None:\n"
+              "    enabled_kinds = [\n"
+              "        provider.kind\n"
+              "        for provider in Options().research_providers\n"
+              "        if provider.enabled\n"
+              "    ]\n"
+              "    issues = distribution_license_issues(enabled_kinds)\n"
+              "    if issues:\n"
+              '        formatted = "\\n- ".join(issues)\n'
+              "        raise RuntimeError(\n"
+              '            "Evidence-source release defaults failed the licensing gate:\\n- "\n'
+              "            + formatted\n"
+              "        )\n\n\n"
+              "def main() -> int:\n",
+              "release licensing validator",
+          )
+          replace_once(
+              "build_release.py",
+              "    args = parser.parse_args()\n\n"
+              "    project_root = Path(__file__).resolve().parent\n",
+              "    args = parser.parse_args()\n\n"
+              "    _validate_evidence_license_defaults()\n"
+              "    project_root = Path(__file__).resolve().parent\n",
+              "release licensing call",
+          )
+
+          # Existing provenance test: EasyPrivacy review is now resolved.
+          replace_once(
+              "tests/test_repository_lists.py",
+              '    assert privacy[0].raw_data["source_id"] == "easyprivacy_trackingservers"\n'
+              '    assert privacy[0].raw_data["license_review_required"] is True\n',
+              '    assert privacy[0].raw_data["source_id"] == "easyprivacy_trackingservers"\n'
+              "    assert (\n"
+              '        privacy[0].raw_data["license_id"]\n'
+              '        == "GPL-3.0-or-later OR CC-BY-SA-3.0-or-later"\n'
+              "    )\n"
+              '    assert privacy[0].raw_data["license_review_required"] is False\n'
+              '    assert privacy[0].raw_data["license_commercial_use"] == (\n'
+              '        "allowed-with-license-obligations"\n'
+              "    )\n"
+              '    assert privacy[0].raw_data["release_default_eligible"] is True\n',
+              "EasyPrivacy provenance test",
+          )
+      - name: Verify patched files
+        run: |
+          python -m py_compile \
+            pihole_manager/evidence_licensing.py \
+            pihole_manager/research_common.py \
+            pihole_manager/repository_lists.py \
+            pihole_manager/gui/tabs/settings_research.py \
+            build_release.py \
+            tests/test_evidence_licensing.py \
+            tests/test_repository_lists.py
+          python - <<'PY'
+          from pihole_manager.config import Options
+          from pihole_manager.evidence_licensing import distribution_license_issues
+          enabled = [item.kind for item in Options().research_providers if item.enabled]
+          assert distribution_license_issues(enabled) == []
+          assert distribution_license_issues(["disconnect_tracking"])
+          PY
+      - name: Commit integration
+        run: |
+          if git diff --quiet; then
+            echo "Integration already applied"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            pihole_manager/research_common.py \
+            pihole_manager/repository_lists.py \
+            pihole_manager/gui/tabs/settings_research.py \
+            build_release.py \
+            tests/test_repository_lists.py
+          git commit -m "Enforce reviewed evidence licensing in releases"
+          git push origin HEAD:codex/evidence-licensing-20260820
