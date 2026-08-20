@@ -71,6 +71,49 @@ class ServiceDependencyGraph:
             "edges": [edge.as_dict() for edge in self.edges],
         }
 
+    def prompt_context(self, *, max_related_domains: int = 8) -> dict[str, Any]:
+        node_by_id = {node.node_id: node for node in self.nodes}
+        root_id = _domain_node_id(self.root_domain)
+        services = [
+            {
+                "name": node.label,
+                "role": node.service_role,
+            }
+            for node in self.nodes
+            if node.node_type == "service"
+        ]
+        dependencies = []
+        for edge in self.edges:
+            if edge.source != root_id or edge.relation == "member_of":
+                continue
+            target = node_by_id.get(edge.target)
+            dependencies.append(
+                {
+                    "target_type": target.node_type if target else "",
+                    "target": target.label if target else edge.target,
+                    "relation": edge.relation,
+                    "confidence": round(edge.confidence, 3),
+                    "provenance": edge.provenance,
+                    "provider": edge.evidence_provider,
+                    "source_url": edge.evidence_url,
+                }
+            )
+        related_domain_nodes = [
+            node
+            for node in self.nodes
+            if node.node_type == "domain" and node.node_id != root_id
+        ]
+        related_domains = [
+            node.label for node in related_domain_nodes[: max(0, int(max_related_domains))]
+        ]
+        return {
+            "services": services,
+            "dependencies": dependencies,
+            "related_domains": related_domains,
+            "related_domains_truncated": self.peer_domains_truncated
+            or len(related_domain_nodes) > len(related_domains),
+        }
+
 
 def service_dependency_graph(
     domain: str,
