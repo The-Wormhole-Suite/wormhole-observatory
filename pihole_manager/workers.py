@@ -12,6 +12,7 @@ from pihole_manager.analysis_dispatcher import (
     dispatch_analysis,
 )
 from pihole_manager.cancellation import CancellationToken, OperationCancelledError
+from pihole_manager.compatibility_profiles import apply_compatibility_profile
 from pihole_manager.config import (
     LLMOptions,
     LLMProviderOptions,
@@ -467,6 +468,7 @@ class Classifier(ManagedWorker):
                 or ("Manually queued for review." if manual_review_requested else "")
             ),
         )
+        classification = apply_compatibility_profile(classification)
         research_data = dossier.get("research") or {}
         decision_evidence_count = int(research_data.get("decision_relevant_count") or 0)
         decision = resolve_automatic_decision(
