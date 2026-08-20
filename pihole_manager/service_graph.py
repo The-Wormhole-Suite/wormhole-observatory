@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -75,6 +75,7 @@ class ServiceDependencyGraph:
 def service_dependency_graph(
     domain: str,
     *,
+    findings: Sequence[Mapping[str, Any] | Any] | None = None,
     max_peer_domains: int = _MAX_PEER_DOMAINS,
 ) -> ServiceDependencyGraph:
     normalized = _normalize_domain(domain)
@@ -167,12 +168,18 @@ def service_dependency_graph(
             ),
         )
 
-    for finding in research_findings_get(
-        normalized,
-        fresh_only=False,
-        limit=_MAX_RESEARCH_FINDINGS,
-    ):
-        for relationship in _relationships_from_finding(finding):
+    selected_findings = (
+        list(findings)
+        if findings is not None
+        else research_findings_get(
+            normalized,
+            fresh_only=False,
+            limit=_MAX_RESEARCH_FINDINGS,
+        )
+    )
+    for finding in selected_findings:
+        finding_data = _finding_mapping(finding)
+        for relationship in _relationships_from_finding(finding_data):
             target_type = relationship["target_type"]
             target = relationship["target"]
             relation = relationship["relation"]
@@ -194,11 +201,11 @@ def service_dependency_graph(
                     root_id,
                     target_id,
                     relation,
-                    _confidence(finding.get("confidence")),
+                    _confidence(finding_data.get("confidence")),
                     "evidence",
-                    evidence_provider=str(finding.get("provider") or ""),
-                    evidence_url=str(finding.get("source_url") or ""),
-                    metadata={"finding_kind": str(finding.get("kind") or "")},
+                    evidence_provider=str(finding_data.get("provider") or ""),
+                    evidence_url=str(finding_data.get("source_url") or ""),
+                    metadata={"finding_kind": str(finding_data.get("kind") or "")},
                 ),
             )
 
@@ -322,6 +329,19 @@ def _relationships_from_finding(finding: Mapping[str, Any]) -> list[dict[str, st
             }
         )
     return output
+
+
+def _finding_mapping(finding: Mapping[str, Any] | Any) -> Mapping[str, Any]:
+    if isinstance(finding, Mapping):
+        return finding
+    raw_data = getattr(finding, "raw_data", {})
+    return {
+        "provider": getattr(finding, "provider", ""),
+        "kind": getattr(finding, "kind", ""),
+        "source_url": getattr(finding, "source_url", ""),
+        "confidence": getattr(finding, "confidence", 0.0),
+        "raw_data": raw_data if isinstance(raw_data, Mapping) else {},
+    }
 
 
 def _normalize_relation(value: object) -> str:
