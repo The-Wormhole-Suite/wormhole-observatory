@@ -100,10 +100,8 @@ _SOURCE_DEFINITIONS = {
             "lookup",
             True,
             False,
-            "Parses selected structured fields from the public Site Report when "
-            "robots.txt permits it.",
-            "Public HTML under Netcraft fair-use terms; layout may change and access "
-            "may be blocked.",
+            "Parses selected structured fields from the public Site Report when robots.txt permits it.",
+            "Public HTML under Netcraft fair-use terms; layout may change and access may be blocked.",
             True,
         ),
         SourceDefinition(
@@ -128,8 +126,7 @@ _SOURCE_DEFINITIONS = {
             "catalog",
             False,
             True,
-            "Downloads the verified online phishing database and performs hostname "
-            "lookups locally.",
+            "Downloads the verified online phishing database and performs hostname lookups locally.",
         ),
         SourceDefinition(
             "urlscan",
@@ -164,6 +161,24 @@ _SOURCE_DEFINITIONS = {
             True,
             "Queries the authenticated URLhaus host endpoint for malware-distribution URLs.",
             "Community API is subject to abuse.ch fair-use terms.",
+        ),
+        SourceDefinition(
+            "crtsh",
+            "crt.sh certificate transparency",
+            "lookup",
+            True,
+            False,
+            "Queries public certificate-transparency search results for identity history.",
+            "Context-only evidence; certificate presence is never treated as a malicious verdict.",
+        ),
+        SourceDefinition(
+            "google_safe_browsing",
+            "Google Safe Browsing v5",
+            "lookup",
+            True,
+            True,
+            "Checks HTTP and HTTPS domain URLs against Google Safe Browsing v5 threat search.",
+            "Non-commercial API; keep opt-in and use an appropriate commercial service when needed.",
         ),
     )
 }
