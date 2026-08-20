@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import requests
 
@@ -193,5 +193,5 @@ def _is_future_timestamp(value: str) -> bool:
     except ValueError:
         return False
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed > datetime.now(timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed > datetime.now(UTC)
