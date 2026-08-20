@@ -24,6 +24,7 @@ _SOURCE_BASE_SCORES: dict[str, float] = {
     "urlhaus": 0.99,
     "crtsh": 0.94,
     "google_safe_browsing": 0.99,
+    "compatibility_profile": 0.98,
 }
 
 _EVIDENCE_KIND_TO_SOURCE_KIND: dict[str, str] = {

@@ -15,6 +15,10 @@ from pihole_manager.cancellation import (
     cancel_pending,
     raise_if_cancelled,
 )
+from pihole_manager.compatibility_profiles import (
+    COMPATIBILITY_PROVIDER_NAME,
+    compatibility_finding,
+)
 from pihole_manager.config import ResearchProviderOptions, load_options
 from pihole_manager.database import (
     get_domain_lock,
@@ -233,6 +237,7 @@ def research_many(
         return output
 
     cached_by_domain: dict[str, list[ResearchFinding]] = {}
+    local_findings: list[ResearchFinding] = []
     locked_domains: list[str] = []
     for domain in normalized_domains:
         raise_if_cancelled(cancel_token)
@@ -240,11 +245,20 @@ def research_many(
             _finding_from_row(row)
             for row in research_findings_get(domain, fresh_only=True, limit=500)
         ]
+        cached = [
+            finding for finding in cached if finding.provider != COMPATIBILITY_PROVIDER_NAME
+        ]
+        local_finding = compatibility_finding(domain)
+        if local_finding is not None:
+            cached.append(local_finding)
+            local_findings.append(local_finding)
         cached_by_domain[domain] = cached
         if get_domain_lock(domain) is not None:
             locked_domains.append(domain)
-            output[domain] = cached
-        elif not force:
+            output[domain] = list(cached)
+        elif force:
+            output[domain] = [local_finding] if local_finding is not None else []
+        else:
             output[domain] = list(cached)
 
     if force and locked_domains:
@@ -252,6 +266,9 @@ def research_many(
             "Protected domain(s) cannot be refreshed. Unlock it before refreshing evidence: "
             + ", ".join(locked_domains)
         )
+
+    if local_findings:
+        save_research_findings(local_findings, default_max_age_days=365)
 
     options = load_options()
     providers = [provider for provider in options.research_providers if provider.enabled]

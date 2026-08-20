@@ -4,12 +4,16 @@ import json
 import tkinter as tk
 from tkinter import ttk
 
+from pihole_manager.compatibility_profiles import compatibility_match_for_domain
 from pihole_manager.database import domain_details
 from pihole_manager.gui.policy_labels import policy_label, status_label
 
 
 def show_domain_details(parent: tk.Misc, domain: str) -> None:
-    data = domain_details(domain)
+    data = dict(domain_details(domain) or {})
+    compatibility = compatibility_match_for_domain(domain)
+    if compatibility is not None:
+        data["compatibility_profile"] = compatibility.as_dict()
     dialog = tk.Toplevel(parent)
     dialog.title(f"Domain intelligence — {domain}")
     dialog.geometry("980x720")
