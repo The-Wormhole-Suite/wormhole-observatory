@@ -171,6 +171,8 @@ def test_new_sources_have_metadata_quality_and_release_gating() -> None:
                 domain="example.com",
                 provider="Safe Browsing",
                 kind="threat_intelligence",
+                title="Threat intelligence",
+                summary="Synthetic reputation finding for source-quality scoring.",
                 confidence=1.0,
             ),
             provider.kind,
