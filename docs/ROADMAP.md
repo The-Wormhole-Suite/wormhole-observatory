@@ -16,7 +16,7 @@
 - [x] URLhaus integration after its authenticated feed contract is implemented and tested
 - [x] licensing review before enabling non-commercial datasets in distributed builds
 - [x] certificate-transparency and additional reputation adapters
-- provider-native browsing support for LLMs that can cite primary sources
+- [x] provider-native browsing support for LLMs that can cite primary sources
 - evidence citations in every generated description
 - golden datasets for source, prompt, and model comparison
 
