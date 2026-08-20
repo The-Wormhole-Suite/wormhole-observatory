@@ -3,9 +3,12 @@ from __future__ import annotations
 import pytest
 
 from pihole_manager.config import ResearchProviderOptions
+from pihole_manager.evidence_licensing import source_license_policy
+from pihole_manager.evidence_quality import annotate_source_kind, score_finding
+from pihole_manager.models import ResearchFinding
 from pihole_manager.research import _PROVIDER_HANDLERS
 from pihole_manager.research import test_research_provider as run_provider_test
-from pihole_manager.research_common import ResearchError
+from pihole_manager.research_common import ResearchError, source_definition
 from pihole_manager.research_reputation import research_crtsh, research_google_safe_browsing
 
 
@@ -141,3 +144,41 @@ def test_research_dispatch_registers_new_adapters_and_api_key_skip() -> None:
         skip_missing_api_keys=True,
     )
     assert result.status == "skip"
+
+
+def test_new_sources_have_metadata_quality_and_release_gating() -> None:
+    crt_definition = source_definition("crtsh")
+    safe_definition = source_definition("google_safe_browsing")
+    assert crt_definition is not None
+    assert crt_definition.requires_api_key is False
+    assert safe_definition is not None
+    assert safe_definition.requires_api_key is True
+
+    crt_policy = source_license_policy("crtsh")
+    safe_policy = source_license_policy("google_safe_browsing")
+    assert crt_policy is not None
+    assert crt_policy.release_default_eligible is False
+    assert safe_policy is not None
+    assert safe_policy.commercial_use == "restricted-noncommercial"
+    assert safe_policy.release_default_eligible is False
+
+    provider = ResearchProviderOptions(name="Safe Browsing", kind="google_safe_browsing")
+    finding = research_google_safe_browsing
+    assert provider.kind == "google_safe_browsing"
+    scored = score_finding(
+        annotate_source_kind(
+            ResearchFinding(
+                domain="example.com",
+                provider="Safe Browsing",
+                kind="threat_intelligence",
+                title="Threat intelligence",
+                summary="Synthetic reputation finding for source-quality scoring.",
+                confidence=1.0,
+            ),
+            provider.kind,
+        ),
+        now=0,
+    )
+    assert scored.source_kind == "google_safe_browsing"
+    assert scored.source_score == 0.99
+    assert finding is research_google_safe_browsing

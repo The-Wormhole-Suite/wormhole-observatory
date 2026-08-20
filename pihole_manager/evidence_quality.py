@@ -22,6 +22,8 @@ _SOURCE_BASE_SCORES: dict[str, float] = {
     "hagezi_tif_mini": 0.92,
     "easyprivacy_trackingservers": 0.91,
     "urlhaus": 0.99,
+    "crtsh": 0.94,
+    "google_safe_browsing": 0.99,
 }
 
 _EVIDENCE_KIND_TO_SOURCE_KIND: dict[str, str] = {
@@ -137,17 +139,11 @@ def score_finding(
     source_kind = source_kind_for(finding)
     source_score = _SOURCE_BASE_SCORES.get(source_kind, 0.65)
     confidence = _clamp(_as_float(_value(finding, "confidence", 0.0)))
-
-    # Source reliability and assertion confidence are separate signals. The source remains the
-    # stronger term so an uncertain finding from a high-quality primary dataset is not treated the
-    # same as a confident claim from a weak/experimental source.
     evidence_score = source_score * 0.65 + confidence * 0.35
-
     expires_at = _as_int(_value(finding, "expires_at", 0))
     current = int(time.time()) if now is None else int(now)
     if expires_at > 0 and expires_at < current:
         evidence_score *= 0.75
-
     evidence_score = _clamp(evidence_score)
     return EvidenceQualityScore(
         source_kind=source_kind,
@@ -178,7 +174,6 @@ def detect_contradictions(
         for right, right_dimension, right_side, right_strength in candidates[index + 1 :]:
             if dimension != right_dimension or (left_side, right_side) not in _OPPOSING_STANCES:
                 continue
-
             left_provider = str(_value(left, "provider", "Unknown source") or "Unknown source")
             right_provider = str(_value(right, "provider", "Unknown source") or "Unknown source")
             left_verdict = str(_value(left, "verdict", "unknown") or "unknown").strip().lower()
@@ -195,7 +190,6 @@ def detect_contradictions(
             if key in seen:
                 continue
             seen.add(key)
-
             left_quality = score_finding(left).evidence_score
             right_quality = score_finding(right).evidence_score
             confidence = min(left_quality, right_quality, left_strength, right_strength)
@@ -215,7 +209,6 @@ def detect_contradictions(
                     ),
                 )
             )
-
     order = {"high": 0, "medium": 1, "low": 2}
     contradictions.sort(
         key=lambda item: (

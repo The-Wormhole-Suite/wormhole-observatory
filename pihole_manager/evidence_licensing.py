@@ -147,6 +147,27 @@ _SOURCE_POLICIES: dict[str, EvidenceLicensePolicy] = {
             "for-profit needs may require the enhanced paid API."
         ),
     ),
+    "crtsh": EvidenceLicensePolicy(
+        license_id="public-service-terms",
+        license_url="https://crt.sh/",
+        commercial_use="provider-terms",
+        redistribution="not-bundled",
+        reviewed_at=_REVIEW_DATE,
+        release_default_eligible=False,
+        note="Optional public lookup; no certificate-transparency dataset is bundled.",
+    ),
+    "google_safe_browsing": EvidenceLicensePolicy(
+        license_id="google-safe-browsing-noncommercial",
+        license_url="https://developers.google.com/safe-browsing/",
+        commercial_use="restricted-noncommercial",
+        redistribution="not-bundled",
+        reviewed_at=_REVIEW_DATE,
+        release_default_eligible=False,
+        note=(
+            "Google documents Safe Browsing as non-commercial only. Keep this provider opt-in; "
+            "commercial deployments need an appropriate alternative such as Web Risk."
+        ),
+    ),
 }
 
 _REPOSITORY_LIST_POLICIES: dict[str, EvidenceLicensePolicy] = {
@@ -189,13 +210,8 @@ def repository_list_license_policies() -> dict[str, EvidenceLicensePolicy]:
 def distribution_license_issues(enabled_provider_kinds: Iterable[str]) -> list[str]:
     issues: list[str] = []
     normalized = list(
-        dict.fromkeys(
-            kind.strip().lower()
-            for kind in enabled_provider_kinds
-            if kind
-        )
+        dict.fromkeys(kind.strip().lower() for kind in enabled_provider_kinds if kind)
     )
-
     for kind in normalized:
         policy = source_license_policy(kind)
         if policy is None:
@@ -208,7 +224,6 @@ def distribution_license_issues(enabled_provider_kinds: Iterable[str]) -> list[s
             issues.append(
                 f"{kind}: must remain opt-in for distributed builds ({policy.commercial_use})"
             )
-
         if kind == "repository_lists":
             for source_id, nested in _REPOSITORY_LIST_POLICIES.items():
                 if nested.review_required:
@@ -218,5 +233,4 @@ def distribution_license_issues(enabled_provider_kinds: Iterable[str]) -> list[s
                         f"{source_id}: repository list is not safe for release defaults "
                         f"({nested.commercial_use})"
                     )
-
     return issues
