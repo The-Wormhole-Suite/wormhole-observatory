@@ -31,8 +31,11 @@ class GoldenDataset:
     cases: tuple[GoldenCase, ...]
 
     def case_for_domain(self, domain: str) -> GoldenCase | None:
-        normalized = _normalize(domain)
-        return next((case for case in self.cases if _normalize(case.domain) == normalized), None)
+        normalized = _normalize_domain(domain)
+        return next(
+            (case for case in self.cases if _normalize_domain(case.domain) == normalized),
+            None,
+        )
 
     def case_by_id(self, case_id: str) -> GoldenCase | None:
         normalized = case_id.strip().casefold()
@@ -93,7 +96,7 @@ def load_golden_dataset(path: str | Path | None = None) -> GoldenDataset:
     for raw_case in raw_cases:
         case = _parse_case(raw_case)
         case_key = case.case_id.casefold()
-        domain_key = _normalize(case.domain)
+        domain_key = _normalize_domain(case.domain)
         if case_key in seen_ids:
             raise ValueError(f"Duplicate golden case id: {case.case_id}")
         if domain_key in seen_domains:
@@ -121,7 +124,12 @@ def evaluate_classification(
     policies = _string_set(expected.get("policies"))
     if policies:
         actual_policy = _enum_value(actual.get("policy"))
-        checks.append((actual_policy in policies, f"policy={actual_policy!r} not in {sorted(policies)}"))
+        checks.append(
+            (
+                actual_policy in policies,
+                f"policy={actual_policy!r} not in {sorted(policies)}",
+            )
+        )
 
     actual_tags = _string_set(actual.get("tags"))
     category = _normalize(_enum_value(actual.get("category")))
@@ -135,7 +143,12 @@ def evaluate_classification(
     roles = _string_set(expected.get("service_roles"))
     if roles:
         actual_role = _enum_value(actual.get("service_role"))
-        checks.append((actual_role in roles, f"service_role={actual_role!r} not in {sorted(roles)}"))
+        checks.append(
+            (
+                actual_role in roles,
+                f"service_role={actual_role!r} not in {sorted(roles)}",
+            )
+        )
 
     expected_review = expected.get("needs_review")
     if isinstance(expected_review, bool):
@@ -291,7 +304,7 @@ def _parse_case(raw_case: object) -> GoldenCase:
         raise ValueError("Golden cases require case_id and domain.")
     if not isinstance(dossier, Mapping):
         raise ValueError(f"Golden case {case_id} requires a dossier object.")
-    if _normalize(dossier.get("domain")) != _normalize(domain):
+    if _normalize_domain(dossier.get("domain")) != _normalize_domain(domain):
         raise ValueError(f"Golden case {case_id} dossier domain does not match case domain.")
     if not isinstance(expected, Mapping):
         raise ValueError(f"Golden case {case_id} requires expected classification criteria.")
@@ -346,6 +359,10 @@ def _enum_value(value: object) -> str:
 
 def _normalize(value: object) -> str:
     return str(value or "").strip().casefold()
+
+
+def _normalize_domain(value: object) -> str:
+    return _normalize(value).rstrip(".")
 
 
 def _integer(value: object, field: str) -> int:
