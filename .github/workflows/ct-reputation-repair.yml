@@ -1,0 +1,302 @@
+name: Repair CT reputation branch
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Restore base files and apply CT/reputation patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin codex/roadmap-audit-20260819
+          git checkout origin/codex/roadmap-audit-20260819 -- \
+            pihole_manager/config.py \
+            pihole_manager/research.py \
+            pihole_manager/research_common.py \
+            pihole_manager/evidence_quality.py \
+            pihole_manager/evidence_licensing.py \
+            docs/ROADMAP.md
+          python - <<'PY'
+          from pathlib import Path
+          from textwrap import dedent
+
+          path = Path('pihole_manager/research.py')
+          s = path.read_text(encoding='utf-8')
+          s = s.replace(
+              'from pihole_manager.research_urlhaus import research_urlhaus\n',
+              'from pihole_manager.research_reputation import research_crtsh, research_google_safe_browsing\n'
+              'from pihole_manager.research_urlhaus import research_urlhaus\n',
+          )
+          s = s.replace(
+              '    "urlhaus": "example.com",\n',
+              '    "urlhaus": "example.com",\n'
+              '    "crtsh": "example.com",\n'
+              '    "google_safe_browsing": "testsafebrowsing.appspot.com",\n',
+          )
+          s = s.replace(
+              '    "urlhaus": research_urlhaus,\n',
+              '    "urlhaus": research_urlhaus,\n'
+              '    "crtsh": research_crtsh,\n'
+              '    "google_safe_browsing": research_google_safe_browsing,\n',
+          )
+          path.write_text(s, encoding='utf-8')
+
+          path = Path('pihole_manager/config.py')
+          s = path.read_text(encoding='utf-8')
+          needle = dedent('''
+                      ResearchProviderOptions(
+                          name="URLhaus host lookup",
+                          kind="urlhaus",
+                          enabled=False,
+                          base_url="https://urlhaus-api.abuse.ch/v1",
+                          min_interval_sec=1.0,
+                          refresh_interval_hours=6,
+                          max_results=5,
+                          test_domain="example.com",
+                      ),
+          ''').lstrip('\n')
+          addition = needle + dedent('''
+                      ResearchProviderOptions(
+                          name="crt.sh certificate transparency",
+                          kind="crtsh",
+                          enabled=False,
+                          base_url="https://crt.sh/",
+                          min_interval_sec=2.0,
+                          refresh_interval_hours=24,
+                          max_results=1,
+                          test_domain="example.com",
+                      ),
+                      ResearchProviderOptions(
+                          name="Google Safe Browsing v5",
+                          kind="google_safe_browsing",
+                          enabled=False,
+                          base_url="https://safebrowsing.googleapis.com",
+                          min_interval_sec=1.0,
+                          refresh_interval_hours=6,
+                          max_results=1,
+                          test_domain="testsafebrowsing.appspot.com",
+                      ),
+          ''').lstrip('\n')
+          if needle not in s:
+              raise SystemExit('config patch anchor not found')
+          path.write_text(s.replace(needle, addition), encoding='utf-8')
+
+          path = Path('pihole_manager/research_common.py')
+          s = path.read_text(encoding='utf-8')
+          needle = dedent('''
+                  SourceDefinition(
+                      "urlhaus",
+                      "URLhaus host lookup",
+                      "lookup",
+                      True,
+                      True,
+                      "Queries the authenticated URLhaus host endpoint for malware-distribution URLs.",
+                      "Community API is subject to abuse.ch fair-use terms.",
+                  ),
+          ''').lstrip('\n')
+          addition = needle + dedent('''
+                  SourceDefinition(
+                      "crtsh",
+                      "crt.sh certificate transparency",
+                      "lookup",
+                      True,
+                      False,
+                      "Queries crt.sh certificate-transparency search results for certificate identity history.",
+                      "Public crt.sh lookup; evidence is contextual and is never treated as a malicious verdict.",
+                  ),
+                  SourceDefinition(
+                      "google_safe_browsing",
+                      "Google Safe Browsing v5",
+                      "lookup",
+                      True,
+                      True,
+                      "Checks HTTP and HTTPS domain URLs against Google Safe Browsing v5 threat URL search.",
+                      "Google Safe Browsing is non-commercial only; distributed defaults must keep it opt-in.",
+                  ),
+          ''').lstrip('\n')
+          if needle not in s:
+              raise SystemExit('research_common patch anchor not found')
+          path.write_text(s.replace(needle, addition), encoding='utf-8')
+
+          path = Path('pihole_manager/evidence_quality.py')
+          s = path.read_text(encoding='utf-8')
+          s = s.replace(
+              '    "urlhaus": 0.99,\n',
+              '    "urlhaus": 0.99,\n    "crtsh": 0.94,\n    "google_safe_browsing": 0.99,\n',
+          )
+          s = s.replace(
+              '    "malware_url_host": "urlhaus",\n',
+              '    "malware_url_host": "urlhaus",\n'
+              '    "certificate_transparency": "crtsh",\n'
+              '    "threat_reputation": "google_safe_browsing",\n',
+          )
+          path.write_text(s, encoding='utf-8')
+
+          path = Path('pihole_manager/evidence_licensing.py')
+          s = path.read_text(encoding='utf-8')
+          anchor = '    "urlhaus": EvidenceLicensePolicy('
+          start = s.index(anchor)
+          end = s.index('\n    ),\n', start) + len('\n    ),\n')
+          addition = dedent('''
+              "crtsh": EvidenceLicensePolicy(
+                  license_id="public-service-terms",
+                  license_url="https://crt.sh/",
+                  commercial_use="provider-terms",
+                  redistribution="not-bundled",
+                  reviewed_at=_REVIEW_DATE,
+                  release_default_eligible=False,
+                  note="Optional public lookup; no certificate-transparency dataset is bundled.",
+              ),
+              "google_safe_browsing": EvidenceLicensePolicy(
+                  license_id="google-safe-browsing-noncommercial",
+                  license_url="https://developers.google.com/safe-browsing/",
+                  commercial_use="restricted-noncommercial",
+                  redistribution="not-bundled",
+                  reviewed_at=_REVIEW_DATE,
+                  release_default_eligible=False,
+                  note=(
+                      "Google documents the Safe Browsing API as non-commercial only. Keep this provider "
+                      "strictly opt-in; commercial deployments must use an appropriate alternative such as Web Risk."
+                  ),
+              ),
+          ''').lstrip('\n')
+          s = s[:end] + addition + s[end:]
+          path.write_text(s, encoding='utf-8')
+
+          path = Path('docs/ROADMAP.md')
+          s = path.read_text(encoding='utf-8')
+          s = s.replace(
+              '- certificate-transparency and additional reputation adapters',
+              '- [x] certificate-transparency and additional reputation adapters',
+          )
+          path.write_text(s, encoding='utf-8')
+
+          Path('tests/test_research_reputation.py').write_text(dedent('''
+          from __future__ import annotations
+
+          import pytest
+
+          from pihole_manager.config import Options, ResearchProviderOptions
+          from pihole_manager.evidence_quality import score_finding
+          from pihole_manager.research_common import ResearchError, provider_snapshot
+          from pihole_manager.research_reputation import research_crtsh, research_google_safe_browsing
+
+
+          class _Response:
+              def __init__(self, payload, *, url: str = "https://example.invalid/") -> None:
+                  self._payload = payload
+                  self.url = url
+
+              def raise_for_status(self) -> None:
+                  return None
+
+              def json(self):
+                  return self._payload
+
+
+          def test_crtsh_returns_context_only(monkeypatch) -> None:
+              payload = [{
+                  "name_value": "example.com\\nwww.example.com",
+                  "issuer_name": "Example CA",
+                  "not_before": "2026-01-01T00:00:00",
+                  "not_after": "2030-01-01T00:00:00",
+              }]
+              monkeypatch.setattr(
+                  "pihole_manager.research_reputation.requests.get",
+                  lambda *_args, **_kwargs: _Response(payload, url="https://crt.sh/?q=example.com&output=json"),
+              )
+              monkeypatch.setattr("pihole_manager.research_reputation.wait_for_provider", lambda _provider: None)
+              provider = ResearchProviderOptions(name="crt.sh", kind="crtsh", enabled=True, min_interval_sec=0.0)
+              finding = research_crtsh("Example.COM.", provider)[0]
+              assert finding.kind == "certificate_transparency"
+              assert finding.verdict == "certificate_transparency_context"
+              assert finding.decision_relevant is False
+              assert finding.raw_data["matching_names"] == ["example.com", "www.example.com"]
+              assert score_finding(finding, now=finding.retrieved_at).source_score == 0.94
+
+
+          def test_safe_browsing_requires_key() -> None:
+              provider = ResearchProviderOptions(name="Safe Browsing", kind="google_safe_browsing")
+              with pytest.raises(ResearchError, match="API key"):
+                  research_google_safe_browsing("example.com", provider)
+
+
+          def test_safe_browsing_maps_social_engineering_to_phishing(monkeypatch) -> None:
+              captured = {}
+
+              def fake_get(url: str, **kwargs):
+                  captured["url"] = url
+                  captured.update(kwargs)
+                  return _Response({
+                      "threats": [{
+                          "url": "https://bad.example/",
+                          "threatTypes": ["SOCIAL_ENGINEERING"],
+                      }],
+                      "cacheDuration": "300s",
+                  })
+
+              monkeypatch.setattr("pihole_manager.research_reputation.requests.get", fake_get)
+              monkeypatch.setattr("pihole_manager.research_reputation.wait_for_provider", lambda _provider: None)
+              provider = ResearchProviderOptions(
+                  name="Safe Browsing",
+                  kind="google_safe_browsing",
+                  enabled=True,
+                  base_url="https://safebrowsing.googleapis.com",
+                  api_key="secret-key",
+                  min_interval_sec=0.0,
+              )
+              finding = research_google_safe_browsing("bad.example", provider)[0]
+              assert captured["url"] == "https://safebrowsing.googleapis.com/v5/urls:search"
+              assert ("key", "secret-key") in captured["params"]
+              assert ("urls", "https://bad.example/") in captured["params"]
+              assert finding.verdict == "phishing"
+              assert finding.decision_relevant is True
+              assert finding.raw_data["cache_duration"] == "300s"
+              assert score_finding(finding, now=finding.retrieved_at).source_score == 0.99
+
+
+          def test_safe_browsing_no_match_is_neutral(monkeypatch) -> None:
+              monkeypatch.setattr(
+                  "pihole_manager.research_reputation.requests.get",
+                  lambda *_args, **_kwargs: _Response({"threats": [], "cacheDuration": "600s"}),
+              )
+              monkeypatch.setattr("pihole_manager.research_reputation.wait_for_provider", lambda _provider: None)
+              provider = ResearchProviderOptions(
+                  name="Safe Browsing",
+                  kind="google_safe_browsing",
+                  enabled=True,
+                  api_key="secret-key",
+                  min_interval_sec=0.0,
+              )
+              finding = research_google_safe_browsing("example.com", provider)[0]
+              assert finding.verdict == "no_match"
+              assert finding.decision_relevant is False
+
+
+          def test_new_provider_defaults_and_metadata_are_safe() -> None:
+              defaults = {item.kind: item for item in Options().research_providers}
+              crt = provider_snapshot(defaults["crtsh"])
+              safe = provider_snapshot(defaults["google_safe_browsing"])
+              assert defaults["crtsh"].enabled is False
+              assert defaults["google_safe_browsing"].enabled is False
+              assert crt["requires_api_key"] is False
+              assert safe["requires_api_key"] is True
+              assert safe["license_policy"]["release_default_eligible"] is False
+              assert safe["license_policy"]["commercial_use"] == "restricted-noncommercial"
+          ''').lstrip(), encoding='utf-8')
+          PY
+          python -m compileall -q pihole_manager tests/test_research_reputation.py
+          git add pihole_manager tests docs/ROADMAP.md
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Repair and complete CT reputation adapters"
+          git push origin HEAD:codex/ct-reputation-20260820
