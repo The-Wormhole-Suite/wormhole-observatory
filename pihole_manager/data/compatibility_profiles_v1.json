@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "dataset_id": "wormhole-compatibility-core-v1",
+  "profiles": [
+    {
+      "profile_id": "microsoft-entra-identity",
+      "name": "Microsoft Entra identity",
+      "description": "Microsoft identity-platform authorization and token endpoints.",
+      "service_role": "core",
+      "min_breakage_risk": 95,
+      "protection": "deny_requires_review",
+      "exact_domains": [
+        "login.microsoftonline.com",
+        "login.microsoftonline.us",
+        "login.partner.microsoftonline.cn"
+      ],
+      "suffix_domains": [],
+      "reason": "Blocking this identity endpoint can prevent Microsoft account or work/school account authentication and token exchange.",
+      "source_url": "https://learn.microsoft.com/en-us/entra/identity-platform/v2-protocols"
+    },
+    {
+      "profile_id": "google-oauth",
+      "name": "Google OAuth",
+      "description": "Google OAuth authorization, token, and token-revocation endpoints.",
+      "service_role": "core",
+      "min_breakage_risk": 95,
+      "protection": "deny_requires_review",
+      "exact_domains": [
+        "accounts.google.com",
+        "oauth2.googleapis.com"
+      ],
+      "suffix_domains": [],
+      "reason": "Blocking this endpoint can prevent Google sign-in, consent, token exchange, token refresh, or revocation flows.",
+      "source_url": "https://developers.google.com/identity/protocols/oauth2/web-server"
+    },
+    {
+      "profile_id": "apple-sign-in",
+      "name": "Sign in with Apple",
+      "description": "Apple ID authorization endpoint used by Sign in with Apple.",
+      "service_role": "core",
+      "min_breakage_risk": 95,
+      "protection": "deny_requires_review",
+      "exact_domains": [
+        "appleid.apple.com"
+      ],
+      "suffix_domains": [],
+      "reason": "Blocking this endpoint can prevent Sign in with Apple authorization flows.",
+      "source_url": "https://developer.apple.com/documentation/signinwithapple/incorporating-sign-in-with-apple-into-other-platforms"
+    },
+    {
+      "profile_id": "mozilla-account-sync",
+      "name": "Mozilla account and Firefox Sync",
+      "description": "Mozilla account sign-in endpoint used to enable Firefox Sync.",
+      "service_role": "core",
+      "min_breakage_risk": 90,
+      "protection": "deny_requires_review",
+      "exact_domains": [
+        "accounts.firefox.com"
+      ],
+      "suffix_domains": [],
+      "reason": "Blocking this endpoint can prevent Mozilla account sign-in and Firefox Sync setup.",
+      "source_url": "https://support.mozilla.org/en-US/kb/how-do-i-set-sync-my-computer"
+    },
+    {
+      "profile_id": "windows-ncsi",
+      "name": "Windows network connectivity detection",
+      "description": "Windows NCSI active DNS and HTTP connectivity probes.",
+      "service_role": "core",
+      "min_breakage_risk": 90,
+      "protection": "deny_requires_review",
+      "exact_domains": [],
+      "suffix_domains": [
+        "msftconnecttest.com",
+        "msftncsi.com"
+      ],
+      "reason": "Blocking these probes can make Windows report limited or no Internet connectivity and can interfere with captive-portal detection.",
+      "source_url": "https://learn.microsoft.com/en-us/troubleshoot/windows-client/networking/internet-explorer-edge-open-connect-corporate-public-network"
+    }
+  ]
+}
