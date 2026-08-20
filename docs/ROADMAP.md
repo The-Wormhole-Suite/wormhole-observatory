@@ -18,7 +18,7 @@
 - [x] certificate-transparency and additional reputation adapters
 - [x] provider-native browsing support for LLMs that can cite primary sources
 - [x] evidence citations in every generated description
-- golden datasets for source, prompt, and model comparison
+- [x] golden datasets for source, prompt, and model comparison
 
 ## Priority 3: Domain intelligence
 
