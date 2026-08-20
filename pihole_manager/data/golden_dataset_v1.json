@@ -1,0 +1,226 @@
+{
+  "schema_version": 1,
+  "dataset_id": "wormhole-domain-intelligence-core-v1",
+  "description": "Synthetic, frozen evidence cases for reproducible source, prompt, and model comparisons. No live provider response is embedded or redistributed.",
+  "cases": [
+    {
+      "case_id": "cross-site-advertising",
+      "domain": "ads.cross-site.test",
+      "description": "A dedicated third-party advertising and cross-site tracking endpoint.",
+      "dossier": {
+        "domain": "ads.cross-site.test",
+        "findings": [
+          {
+            "provider": "Curated tracking catalog",
+            "kind": "tracking",
+            "signal_type": "privacy",
+            "verdict": "tracker",
+            "decision_relevant": true,
+            "title": "Advertising tracker match",
+            "summary": "The endpoint is listed as a third-party advertising and cross-site tracking service.",
+            "source_url": "https://example.test/evidence/tracker",
+            "confidence": 0.98,
+            "source_quality": 0.95,
+            "evidence_quality": 0.95,
+            "quality_tier": "high",
+            "retrieved_at": 0
+          },
+          {
+            "provider": "DNS snapshot",
+            "kind": "dns",
+            "signal_type": "identity",
+            "verdict": "context",
+            "decision_relevant": false,
+            "title": "DNS context",
+            "summary": "The hostname resolves independently from the first-party application host.",
+            "source_url": "https://example.test/evidence/dns",
+            "confidence": 0.9,
+            "source_quality": 0.9,
+            "evidence_quality": 0.7,
+            "quality_tier": "medium",
+            "retrieved_at": 0
+          }
+        ]
+      },
+      "expected": {
+        "policies": ["deny"],
+        "required_tags": ["advertising", "cross_site_tracking"],
+        "forbidden_tags": ["authentication", "payments", "software_updates"],
+        "service_roles": ["optional", "unknown"],
+        "needs_review": false,
+        "risk_ranges": {
+          "privacy_risk": [75, 100],
+          "security_risk": [0, 40],
+          "breakage_risk": [0, 40]
+        }
+      },
+      "source_expectations": {
+        "required_providers": ["curated tracking catalog"],
+        "required_kinds": ["tracking"],
+        "required_verdicts": ["tracker"],
+        "forbidden_verdicts": ["malware", "phishing"],
+        "minimum_decision_relevant": 1
+      }
+    },
+    {
+      "case_id": "core-authentication",
+      "domain": "login.core.test",
+      "description": "A first-party authentication endpoint where blocking is expected to break sign-in.",
+      "dossier": {
+        "domain": "login.core.test",
+        "findings": [
+          {
+            "provider": "Service catalog",
+            "kind": "service_dependency",
+            "signal_type": "function",
+            "verdict": "authentication",
+            "decision_relevant": true,
+            "title": "Core authentication dependency",
+            "summary": "The endpoint is required for account sign-in and token exchange.",
+            "source_url": "https://example.test/evidence/auth",
+            "confidence": 0.99,
+            "source_quality": 0.98,
+            "evidence_quality": 0.98,
+            "quality_tier": "high",
+            "retrieved_at": 0
+          },
+          {
+            "provider": "Registration snapshot",
+            "kind": "registration",
+            "signal_type": "identity",
+            "verdict": "first_party",
+            "decision_relevant": false,
+            "title": "First-party registration context",
+            "summary": "Registration context is consistent with the application owner.",
+            "source_url": "https://example.test/evidence/registration",
+            "confidence": 0.92,
+            "source_quality": 0.9,
+            "evidence_quality": 0.8,
+            "quality_tier": "high",
+            "retrieved_at": 0
+          }
+        ]
+      },
+      "expected": {
+        "policies": ["manual_review", "allow"],
+        "required_tags": ["authentication"],
+        "forbidden_tags": ["advertising", "malware", "phishing"],
+        "service_roles": ["core"],
+        "needs_review": true,
+        "risk_ranges": {
+          "privacy_risk": [0, 50],
+          "security_risk": [0, 50],
+          "breakage_risk": [75, 100]
+        }
+      },
+      "source_expectations": {
+        "required_providers": ["service catalog"],
+        "required_kinds": ["service_dependency"],
+        "required_verdicts": ["authentication"],
+        "forbidden_verdicts": ["malware", "phishing"],
+        "minimum_decision_relevant": 1
+      }
+    },
+    {
+      "case_id": "confirmed-malware",
+      "domain": "payload.malware.test",
+      "description": "A synthetic endpoint with corroborated malware threat-intelligence evidence.",
+      "dossier": {
+        "domain": "payload.malware.test",
+        "findings": [
+          {
+            "provider": "Threat intelligence A",
+            "kind": "threat_intelligence",
+            "signal_type": "security",
+            "verdict": "malware",
+            "decision_relevant": true,
+            "title": "Malware match",
+            "summary": "The endpoint is associated with active malware distribution.",
+            "source_url": "https://example.test/evidence/malware-a",
+            "confidence": 0.99,
+            "source_quality": 0.99,
+            "evidence_quality": 0.99,
+            "quality_tier": "high",
+            "retrieved_at": 0
+          },
+          {
+            "provider": "Threat intelligence B",
+            "kind": "threat_intelligence",
+            "signal_type": "security",
+            "verdict": "malware",
+            "decision_relevant": true,
+            "title": "Independent malware corroboration",
+            "summary": "A second source independently identifies the endpoint as malicious.",
+            "source_url": "https://example.test/evidence/malware-b",
+            "confidence": 0.97,
+            "source_quality": 0.96,
+            "evidence_quality": 0.96,
+            "quality_tier": "high",
+            "retrieved_at": 0
+          }
+        ]
+      },
+      "expected": {
+        "policies": ["deny"],
+        "required_tags": ["malware"],
+        "forbidden_tags": ["authentication", "payments"],
+        "service_roles": ["optional", "unknown"],
+        "risk_ranges": {
+          "privacy_risk": [0, 100],
+          "security_risk": [85, 100],
+          "breakage_risk": [0, 50]
+        }
+      },
+      "source_expectations": {
+        "required_kinds": ["threat_intelligence"],
+        "required_verdicts": ["malware"],
+        "forbidden_verdicts": ["benign"],
+        "minimum_decision_relevant": 2
+      }
+    },
+    {
+      "case_id": "shared-cdn",
+      "domain": "assets.shared-cdn.test",
+      "description": "A shared CDN endpoint where aggressive blocking has substantial collateral-breakage risk.",
+      "dossier": {
+        "domain": "assets.shared-cdn.test",
+        "findings": [
+          {
+            "provider": "Infrastructure catalog",
+            "kind": "infrastructure",
+            "signal_type": "function",
+            "verdict": "shared_cdn",
+            "decision_relevant": true,
+            "title": "Shared CDN infrastructure",
+            "summary": "The hostname serves content for multiple unrelated services and tenants.",
+            "source_url": "https://example.test/evidence/cdn",
+            "confidence": 0.96,
+            "source_quality": 0.94,
+            "evidence_quality": 0.94,
+            "quality_tier": "high",
+            "retrieved_at": 0
+          }
+        ]
+      },
+      "expected": {
+        "policies": ["manual_review", "allow"],
+        "required_tags": ["cdn_shared_infrastructure"],
+        "forbidden_tags": ["malware", "phishing", "command_and_control"],
+        "service_roles": ["shared"],
+        "needs_review": true,
+        "risk_ranges": {
+          "privacy_risk": [0, 60],
+          "security_risk": [0, 40],
+          "breakage_risk": [70, 100]
+        }
+      },
+      "source_expectations": {
+        "required_providers": ["infrastructure catalog"],
+        "required_kinds": ["infrastructure"],
+        "required_verdicts": ["shared_cdn"],
+        "forbidden_verdicts": ["malware", "phishing"],
+        "minimum_decision_relevant": 1
+      }
+    }
+  ]
+}
