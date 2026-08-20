@@ -11,6 +11,7 @@ from pihole6api import (
     PiHole6Client,
     normalize_api_url,
 )
+from pihole_manager.compatibility_profiles import compatibility_match_for_domain
 from pihole_manager.config import PiHoleOptions, load_options
 from pihole_manager.database import get_domain_lock
 from pihole_manager.models import ConnectionTestResult, Policy
@@ -269,7 +270,13 @@ def fetch_exact_domains(domain_type: str) -> list[dict[str, Any]]:
     return output
 
 
-def add_exact_domain(domain: str, policy: Policy | str, comment: str = "") -> Any:
+def add_exact_domain(
+    domain: str,
+    policy: Policy | str,
+    comment: str = "",
+    *,
+    compatibility_override: bool = False,
+) -> Any:
     policy_value = policy.value if isinstance(policy, Policy) else str(policy)
     if policy_value not in {Policy.ALLOW.value, Policy.DENY.value}:
         raise ValueError("policy must be allow or deny")
@@ -278,6 +285,17 @@ def add_exact_domain(domain: str, policy: Policy | str, comment: str = "") -> An
         raise RuntimeError(
             "Domain is protected in the "
             f"{lock['list_type']} list and cannot be added to {policy_value}."
+        )
+    compatibility = compatibility_match_for_domain(domain)
+    if (
+        policy_value == Policy.DENY.value
+        and compatibility is not None
+        and not compatibility_override
+    ):
+        raise RuntimeError(
+            f"Domain matches protected compatibility profile '{compatibility.profile.name}' "
+            f"({compatibility.matched_pattern}). Blocking requires an explicit compatibility "
+            f"override. {compatibility.profile.reason}"
         )
     return get_client().domain_management.add_domain(
         domain=domain,
