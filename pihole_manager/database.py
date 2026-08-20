@@ -11,12 +11,12 @@ from pihole_manager.database_features import research_findings_get as _research_
 from pihole_manager.database_review import *  # noqa: F403
 from pihole_manager.evidence_citations import attach_evidence_citations
 from pihole_manager.manual_tag_overrides import (
-    domain_browser_search,
-    effective_tags,
-    manual_tags,
-    review_get,
-    review_queue_items,
-    set_manual_tags,
+    domain_browser_search as domain_browser_search,
+    effective_tags as effective_tags,
+    manual_tags as manual_tags,
+    review_get as review_get,
+    review_queue_items as review_queue_items,
+    set_manual_tags as set_manual_tags,
 )
 from pihole_manager.models import Classification
 
