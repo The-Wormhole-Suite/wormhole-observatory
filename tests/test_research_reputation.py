@@ -3,10 +3,8 @@ from __future__ import annotations
 import pytest
 
 from pihole_manager.config import ResearchProviderOptions
-from pihole_manager.research import (
-    _PROVIDER_HANDLERS,
-    test_research_provider as run_provider_test,
-)
+from pihole_manager.research import _PROVIDER_HANDLERS
+from pihole_manager.research import test_research_provider as run_provider_test
 from pihole_manager.research_common import ResearchError
 from pihole_manager.research_reputation import research_crtsh, research_google_safe_browsing
 
