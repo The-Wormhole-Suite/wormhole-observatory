@@ -24,7 +24,7 @@
 
 - [x] protected services and compatibility profiles
 - [x] manual tags that override LLM tags
-- service dependency graphs
+- [x] service dependency graphs
 - historical behavior-change detection
 - evidence freshness policies per tag and source
 
