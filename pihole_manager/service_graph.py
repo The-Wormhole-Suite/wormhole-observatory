@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -211,15 +212,17 @@ def service_dependency_graph(
             ),
         )
 
-    selected_findings = (
-        list(findings)
-        if findings is not None
-        else research_findings_get(
-            normalized,
-            fresh_only=False,
-            limit=_MAX_RESEARCH_FINDINGS,
-        )
-    )
+    if findings is not None:
+        selected_findings = list(findings)
+    else:
+        try:
+            selected_findings = research_findings_get(
+                normalized,
+                fresh_only=False,
+                limit=_MAX_RESEARCH_FINDINGS,
+            )
+        except sqlite3.OperationalError:
+            selected_findings = []
     for finding in selected_findings:
         finding_data = _finding_mapping(finding)
         for relationship in _relationships_from_finding(finding_data):
@@ -282,28 +285,31 @@ def service_dependency_graph(
 
 
 def _current_service_record(domain: str) -> dict[str, Any] | None:
-    with _DB_LOCK, _connection() as connection:
-        row = connection.execute(
-            """
-            SELECT
-                d.domain,
-                d.current_service AS service,
-                d.current_service_role AS service_role,
-                COALESCE(
-                    (
-                        SELECT c.confidence
-                        FROM classification_runs c
-                        WHERE c.domain = d.domain AND c.is_primary = 1
-                        ORDER BY c.created_at DESC, c.id DESC
-                        LIMIT 1
-                    ),
-                    0
-                ) AS confidence
-            FROM domains d
-            WHERE d.domain = ?
-            """,
-            (domain,),
-        ).fetchone()
+    try:
+        with _DB_LOCK, _connection() as connection:
+            row = connection.execute(
+                """
+                SELECT
+                    d.domain,
+                    d.current_service AS service,
+                    d.current_service_role AS service_role,
+                    COALESCE(
+                        (
+                            SELECT c.confidence
+                            FROM classification_runs c
+                            WHERE c.domain = d.domain AND c.is_primary = 1
+                            ORDER BY c.created_at DESC, c.id DESC
+                            LIMIT 1
+                        ),
+                        0
+                    ) AS confidence
+                FROM domains d
+                WHERE d.domain = ?
+                """,
+                (domain,),
+            ).fetchone()
+    except sqlite3.OperationalError:
+        return None
     return dict(row) if row else None
 
 
@@ -315,29 +321,32 @@ def _service_peers(
     safe_limit = max(0, min(250, int(max_peer_domains)))
     if safe_limit == 0:
         return [], False
-    with _DB_LOCK, _connection() as connection:
-        rows = connection.execute(
-            """
-            SELECT
-                d.domain,
-                d.current_service_role AS service_role,
-                COALESCE(
-                    (
-                        SELECT c.confidence
-                        FROM classification_runs c
-                        WHERE c.domain = d.domain AND c.is_primary = 1
-                        ORDER BY c.created_at DESC, c.id DESC
-                        LIMIT 1
-                    ),
-                    0
-                ) AS confidence
-            FROM domains d
-            WHERE LOWER(d.current_service) = LOWER(?)
-            ORDER BY d.domain
-            LIMIT ?
-            """,
-            (service, safe_limit + 1),
-        ).fetchall()
+    try:
+        with _DB_LOCK, _connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                    d.domain,
+                    d.current_service_role AS service_role,
+                    COALESCE(
+                        (
+                            SELECT c.confidence
+                            FROM classification_runs c
+                            WHERE c.domain = d.domain AND c.is_primary = 1
+                            ORDER BY c.created_at DESC, c.id DESC
+                            LIMIT 1
+                        ),
+                        0
+                    ) AS confidence
+                FROM domains d
+                WHERE LOWER(d.current_service) = LOWER(?)
+                ORDER BY d.domain
+                LIMIT ?
+                """,
+                (service, safe_limit + 1),
+            ).fetchall()
+    except sqlite3.OperationalError:
+        return [], False
     output = [dict(row) for row in rows[:safe_limit]]
     return output, len(rows) > safe_limit
 
