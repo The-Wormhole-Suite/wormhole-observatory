@@ -7,6 +7,7 @@ from tkinter import messagebox, ttk
 from typing import Any
 
 from pihole_manager.cancellation import CancellationToken, OperationCancelledError
+from pihole_manager.compatibility_profiles import compatibility_match_for_domain
 from pihole_manager.database import (
     domain_browser_search,
     get_domain_lock,
@@ -411,10 +412,26 @@ class DomainsTab(ttk.Frame):
         if not domains:
             messagebox.showinfo("Domain Database", "Select at least one domain.")
             return
-        future = self.executor.submit(self._apply_planned_domains, domains)
+        deny_domains = [
+            domain
+            for domain in domains
+            if str(self._rows.get(domain, {}).get("planned_action") or "") == Policy.DENY.value
+        ]
+        compatibility_override = self._confirm_protected_denies(deny_domains)
+        if compatibility_override is None:
+            return
+        future = self.executor.submit(
+            self._apply_planned_domains,
+            domains,
+            compatibility_override,
+        )
         future.add_done_callback(lambda item: self.after(0, self._apply_planned_done, item))
 
-    def _apply_planned_domains(self, domains: list[str]) -> tuple[int, list[str]]:
+    def _apply_planned_domains(
+        self,
+        domains: list[str],
+        compatibility_override: bool = False,
+    ) -> tuple[int, list[str]]:
         applied = 0
         errors: list[str] = []
         for domain in domains:
@@ -425,7 +442,12 @@ class DomainsTab(ttk.Frame):
             try:
                 policy = Policy(action)
                 comment = str(self._rows.get(domain, {}).get("short") or "")
-                add_exact_domain(domain, policy, comment)
+                add_exact_domain(
+                    domain,
+                    policy,
+                    comment,
+                    compatibility_override=compatibility_override,
+                )
                 mark_action_applied(domain, action)
                 applied += 1
             except Exception as exc:
@@ -455,19 +477,63 @@ class DomainsTab(ttk.Frame):
         if not domains:
             messagebox.showinfo("Domain Database", "Select at least one domain.")
             return
-        future = self.executor.submit(self._apply_domains, domains, policy)
+        compatibility_override = False
+        if policy is Policy.DENY:
+            confirmed = self._confirm_protected_denies(domains)
+            if confirmed is None:
+                return
+            compatibility_override = confirmed
+        future = self.executor.submit(
+            self._apply_domains,
+            domains,
+            policy,
+            compatibility_override,
+        )
         future.add_done_callback(lambda item: self.after(0, self._apply_done, item, policy))
 
-    def _apply_domains(self, domains: list[str], policy: Policy) -> list[str]:
+    def _apply_domains(
+        self,
+        domains: list[str],
+        policy: Policy,
+        compatibility_override: bool = False,
+    ) -> list[str]:
         errors: list[str] = []
         for domain in domains:
             try:
                 comment = str(self._rows.get(domain, {}).get("short") or "")
-                add_exact_domain(domain, policy, comment)
+                add_exact_domain(
+                    domain,
+                    policy,
+                    comment,
+                    compatibility_override=compatibility_override,
+                )
                 mark_action_applied(domain, policy.value)
             except Exception as exc:
                 errors.append(f"{domain}: {exc}")
         return errors
+
+    def _confirm_protected_denies(self, domains: list[str]) -> bool | None:
+        matches = [
+            (domain, compatibility)
+            for domain in domains
+            if (compatibility := compatibility_match_for_domain(domain)) is not None
+        ]
+        if not matches:
+            return False
+        preview = "\n".join(
+            f"• {domain} — {match.profile.name}" for domain, match in matches[:8]
+        )
+        if len(matches) > 8:
+            preview += f"\n• … and {len(matches) - 8} more"
+        confirmed = messagebox.askyesno(
+            "Protected services",
+            f"{len(matches)} selected domain(s) match protected compatibility profiles:\n\n"
+            f"{preview}\n\n"
+            "Blocking them can break sign-in, synchronization, connectivity detection, or "
+            "other core functionality. Continue with an explicit compatibility override?",
+            parent=self,
+        )
+        return True if confirmed else None
 
     def _apply_done(self, future: Future, policy: Policy) -> None:
         try:
