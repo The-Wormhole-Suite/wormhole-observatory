@@ -126,7 +126,10 @@ def test_research_provider(
         domain or provider.test_domain or _TEST_DOMAINS.get(provider.kind, "example.com")
     )
     definition = provider_snapshot(provider)
-    requires_key = bool(definition.get("requires_api_key")) or provider.kind == "google_safe_browsing"
+    requires_key = (
+        bool(definition.get("requires_api_key"))
+        or provider.kind == "google_safe_browsing"
+    )
     if skip_api_key_sources and requires_key:
         return EvidenceSourceTestResult(
             provider=provider.name,
