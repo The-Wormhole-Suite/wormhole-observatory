@@ -227,7 +227,11 @@ def quality_summary(
     contradictions: Sequence[EvidenceContradiction] | None = None,
 ) -> dict[str, Any]:
     scores = [score_finding(item) for item in findings]
-    detected = list(contradictions) if contradictions is not None else detect_contradictions(findings)
+    detected = (
+        list(contradictions)
+        if contradictions is not None
+        else detect_contradictions(findings)
+    )
     if scores:
         average_source = sum(item.source_score for item in scores) / len(scores)
         average_evidence = sum(item.evidence_score for item in scores) / len(scores)
