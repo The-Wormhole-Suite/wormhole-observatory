@@ -25,6 +25,7 @@ from pihole_manager.database import (
     domain_observation_summary,
     get_domain_lock,
     get_state,
+    manual_tags,
     queue_domains_needing_analysis,
     queue_due_rechecks,
     record_discovered_domains,
@@ -469,10 +470,11 @@ class Classifier(ManagedWorker):
             ),
         )
         classification = apply_compatibility_profile(classification)
+        policy_classification = apply_manual_tag_override(classification)
         research_data = dossier.get("research") or {}
         decision_evidence_count = int(research_data.get("decision_relevant_count") or 0)
         decision = resolve_automatic_decision(
-            classification,
+            policy_classification,
             evidence_count=decision_evidence_count,
             llm_options=selected_options.llm,
         )
@@ -564,6 +566,13 @@ class AutomaticActionDecision:
     review_reason: str = ""
 
 
+def apply_manual_tag_override(classification: Classification) -> Classification:
+    override_tags = manual_tags(classification.domain)
+    if not override_tags:
+        return classification
+    return replace(classification, tags=tuple(override_tags))
+
+
 def resolve_automatic_decision(
     classification: Classification,
     *,
@@ -609,13 +618,14 @@ def resolve_automatic_decision(
             "Invalid default policy for tag(s): " + ", ".join(sorted(invalid_tags)),
         )
 
-    manual_tags = [
+    manual_review_tags = [
         tag for tag, policy in policies_by_tag.items() if policy == Policy.MANUAL_REVIEW.value
     ]
-    if manual_tags:
+    if manual_review_tags:
         return AutomaticActionDecision(
             None,
-            "Manual review is required by tag policy: " + ", ".join(sorted(manual_tags)),
+            "Manual review is required by tag policy: "
+            + ", ".join(sorted(manual_review_tags)),
         )
 
     actionable = {policy for policy in policies_by_tag.values()}

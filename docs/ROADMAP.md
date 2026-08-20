@@ -23,7 +23,7 @@
 ## Priority 3: Domain intelligence
 
 - [x] protected services and compatibility profiles
-- manual tags that override LLM tags
+- [x] manual tags that override LLM tags
 - service dependency graphs
 - historical behavior-change detection
 - evidence freshness policies per tag and source
