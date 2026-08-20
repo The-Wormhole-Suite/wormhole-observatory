@@ -58,6 +58,7 @@ from pihole_manager.research_lookups import (
 )
 from pihole_manager.research_reputation import research_crtsh, research_google_safe_browsing
 from pihole_manager.research_urlhaus import research_urlhaus
+from pihole_manager.service_graph import service_dependency_graph
 
 log = logging.getLogger(__name__)
 _MAX_PROMPT_FINDINGS = 12
@@ -392,6 +393,10 @@ def research_context(
         "omitted_count": max(0, len(visible) - len(prompt_findings)),
         "quality": quality_summary(visible, contradictions),
         "contradictions": [item.as_dict() for item in contradictions],
+        "service_graph": service_dependency_graph(
+            normalized,
+            findings=visible,
+        ).prompt_context(),
         "findings": [_compact_finding(item) for item in prompt_findings],
     }
 

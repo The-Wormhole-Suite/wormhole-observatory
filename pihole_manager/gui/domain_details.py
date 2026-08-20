@@ -7,6 +7,7 @@ from tkinter import simpledialog, ttk
 from pihole_manager.compatibility_profiles import compatibility_match_for_domain
 from pihole_manager.database import domain_details, manual_tags, set_manual_tags
 from pihole_manager.gui.policy_labels import policy_label, status_label
+from pihole_manager.service_graph import service_dependency_graph
 
 
 def show_domain_details(parent: tk.Misc, domain: str) -> None:
@@ -37,6 +38,7 @@ def show_domain_details(parent: tk.Misc, domain: str) -> None:
         compatibility = compatibility_match_for_domain(domain)
         if compatibility is not None:
             data["compatibility_profile"] = compatibility.as_dict()
+        data["service_dependency_graph"] = service_dependency_graph(domain).as_dict()
         text.configure(state="normal")
         text.delete("1.0", "end")
         text.insert(
