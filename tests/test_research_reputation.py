@@ -3,7 +3,10 @@ from __future__ import annotations
 import pytest
 
 from pihole_manager.config import ResearchProviderOptions
-from pihole_manager.research import _PROVIDER_HANDLERS, test_research_provider
+from pihole_manager.research import (
+    _PROVIDER_HANDLERS,
+    test_research_provider as run_provider_test,
+)
 from pihole_manager.research_common import ResearchError
 from pihole_manager.research_reputation import research_crtsh, research_google_safe_browsing
 
@@ -131,7 +134,7 @@ def test_research_dispatch_registers_new_adapters_and_api_key_skip() -> None:
     assert _PROVIDER_HANDLERS["crtsh"] is research_crtsh
     assert _PROVIDER_HANDLERS["google_safe_browsing"] is research_google_safe_browsing
 
-    result = test_research_provider(
+    result = run_provider_test(
         ResearchProviderOptions(
             name="Safe Browsing",
             kind="google_safe_browsing",
