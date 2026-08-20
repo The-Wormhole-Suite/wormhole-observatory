@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import time
+
 from pihole_manager.evidence_citations import attach_evidence_citations
-from pihole_manager.models import Classification, Policy
+from pihole_manager.models import Classification, Policy, ResearchFinding
 from pihole_manager.provider_api import ProviderCitation
 
 
@@ -130,3 +132,90 @@ def test_citation_section_is_idempotent() -> None:
 
     assert second.details == first.details
     assert second.details.count("Evidence citations:") == 1
+
+
+def test_classification_persistence_attaches_fresh_domain_evidence(monkeypatch, tmp_path) -> None:
+    from pihole_manager.database import (
+        classification_history,
+        init_db,
+        review_get,
+        save_classification_run,
+        save_research_findings,
+    )
+
+    monkeypatch.setenv("PIHOLE_MANAGER_HOME", str(tmp_path))
+    init_db()
+    now = int(time.time())
+    save_research_findings(
+        [
+            ResearchFinding(
+                domain="persist.example",
+                provider="RDAP",
+                kind="registration",
+                title="Registration record",
+                summary="Registration evidence",
+                source_url="https://rdap.example/persist",
+                confidence=0.9,
+                retrieved_at=now,
+                expires_at=now + 3600,
+            )
+        ]
+    )
+
+    save_classification_run(_classification("persist.example"))
+
+    history = classification_history("persist.example")
+    review = review_get()[0]
+    assert "Evidence citations:" in history[0]["details"]
+    assert "https://rdap.example/persist" in history[0]["details"]
+    assert review["details"] == history[0]["details"]
+
+
+def test_benchmark_persistence_attaches_fresh_domain_evidence(monkeypatch, tmp_path) -> None:
+    from pihole_manager.database import (
+        benchmark_result_save,
+        benchmark_run_get,
+        benchmark_run_start,
+        init_db,
+        save_research_findings,
+    )
+
+    monkeypatch.setenv("PIHOLE_MANAGER_HOME", str(tmp_path))
+    init_db()
+    now = int(time.time())
+    save_research_findings(
+        [
+            ResearchFinding(
+                domain="benchmark.example",
+                provider="Threat feed",
+                kind="threat_intelligence",
+                title="Threat record",
+                summary="Threat evidence",
+                source_url="https://threat.example/benchmark",
+                confidence=0.95,
+                retrieved_at=now,
+                expires_at=now + 3600,
+            )
+        ]
+    )
+    run_id = benchmark_run_start(
+        "benchmark.example",
+        "background",
+        {"domain": "benchmark.example"},
+        "dossier-hash",
+    )
+
+    benchmark_result_save(
+        run_id,
+        provider_id="provider",
+        provider_name="Provider",
+        model="model",
+        status="completed",
+        classification=_classification("benchmark.example"),
+    )
+
+    run = benchmark_run_get(run_id)
+    assert run is not None
+    details = run["results"][0]["classification"]["details"]
+    assert "Evidence citations:" in details
+    assert "https://threat.example/benchmark" in details
