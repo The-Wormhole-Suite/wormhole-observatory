@@ -52,6 +52,7 @@ from pihole_manager.research_lookups import (
     research_urlscan,
     research_virustotal,
 )
+from pihole_manager.research_reputation import research_crtsh, research_google_safe_browsing
 from pihole_manager.research_urlhaus import research_urlhaus
 
 log = logging.getLogger(__name__)
@@ -88,6 +89,8 @@ _TEST_DOMAINS = {
     "cloudflare_radar": "google.com",
     "repository_lists": "example.com",
     "urlhaus": "example.com",
+    "crtsh": "example.com",
+    "google_safe_browsing": "testsafebrowsing.appspot.com",
 }
 
 _PROVIDER_HANDLERS: dict[
@@ -107,6 +110,8 @@ _PROVIDER_HANDLERS: dict[
     "cloudflare_radar": research_cloudflare_radar,
     "repository_lists": research_repository_lists,
     "urlhaus": research_urlhaus,
+    "crtsh": research_crtsh,
+    "google_safe_browsing": research_google_safe_browsing,
 }
 
 
@@ -121,7 +126,10 @@ def test_research_provider(
         domain or provider.test_domain or _TEST_DOMAINS.get(provider.kind, "example.com")
     )
     definition = provider_snapshot(provider)
-    requires_key = bool(definition.get("requires_api_key"))
+    requires_key = (
+        bool(definition.get("requires_api_key"))
+        or provider.kind == "google_safe_browsing"
+    )
     if skip_api_key_sources and requires_key:
         return EvidenceSourceTestResult(
             provider=provider.name,
@@ -323,8 +331,6 @@ def research_many(
         raise
     finally:
         for executor in executors:
-            # Do not leave an in-flight source request running after the caller
-            # treats the job as cancelled and potentially starts it again.
             executor.shutdown(wait=True, cancel_futures=cancelled)
 
     if collected:
