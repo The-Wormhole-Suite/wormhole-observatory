@@ -73,7 +73,15 @@ def test_repository_lookup_carries_full_source_provenance(monkeypatch) -> None:
     assert len(privacy) == 1
     assert privacy[0].verdict == "tracker"
     assert privacy[0].raw_data["source_id"] == "easyprivacy_trackingservers"
-    assert privacy[0].raw_data["license_review_required"] is True
+    assert (
+        privacy[0].raw_data["license_id"]
+        == "GPL-3.0-or-later OR CC-BY-SA-3.0-or-later"
+    )
+    assert privacy[0].raw_data["license_review_required"] is False
+    assert privacy[0].raw_data["license_commercial_use"] == (
+        "allowed-with-license-obligations"
+    )
+    assert privacy[0].raw_data["release_default_eligible"] is True
 
 
 def test_repository_lookup_treats_no_match_as_neutral(monkeypatch) -> None:

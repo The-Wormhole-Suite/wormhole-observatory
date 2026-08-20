@@ -15,6 +15,7 @@ from urllib.parse import quote, quote_plus
 import requests
 
 from pihole_manager.config import ResearchProviderOptions, app_directory
+from pihole_manager.evidence_licensing import source_license_policy
 from pihole_manager.http_retry import retry_delay_from_headers
 from pihole_manager.models import ResearchFinding
 
@@ -153,7 +154,7 @@ _SOURCE_DEFINITIONS = {
             False,
             False,
             "Downloads selected upstream DNS-safe lists and performs lookups locally.",
-            "Per-source licensing applies; sources requiring review remain disabled.",
+            "Per-source licences are reviewed and recorded in evidence provenance.",
         ),
         SourceDefinition(
             "urlhaus",
@@ -195,6 +196,9 @@ def provider_snapshot(provider: ResearchProviderOptions) -> dict[str, Any]:
                 "license_note": definition.license_note,
             }
         )
+    license_policy = source_license_policy(provider.kind)
+    if license_policy is not None:
+        snapshot["license_policy"] = asdict(license_policy)
     return snapshot
 
 
