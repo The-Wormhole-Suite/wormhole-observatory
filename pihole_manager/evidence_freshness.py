@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from typing import Any
@@ -129,7 +130,7 @@ def freshness_decision_for_finding(
     finding: ResearchFinding,
     context: EvidenceFreshnessContext,
 ) -> EvidenceFreshnessDecision:
-    retrieved_at = max(0, int(finding.retrieved_at or 0))
+    retrieved_at = max(0, int(finding.retrieved_at or int(time.time())))
     source_kind = _source_kind(
         provider=finding.provider,
         kind=finding.kind,
@@ -141,7 +142,6 @@ def freshness_decision_for_finding(
     effective_hours = min(
         source_hours,
         tag_hours if tag_hours is not None else source_hours,
-        context.global_max_age_hours,
     )
     policy_expires_at = retrieved_at + effective_hours * 3600
     original_expires_at = max(0, int(finding.expires_at or 0))
@@ -170,6 +170,7 @@ def apply_freshness_policy(
     raw_data["freshness_policy"] = decision.as_dict()
     return replace(
         finding,
+        retrieved_at=finding.retrieved_at or int(time.time()),
         expires_at=decision.effective_expires_at,
         raw_data=raw_data,
     )
