@@ -14,6 +14,7 @@ from pihole_manager.gui.tabs.domains import DomainsTab
 from pihole_manager.gui.tabs.history import HistoryTab
 from pihole_manager.gui.tabs.lists import ListsTab
 from pihole_manager.gui.tabs.llm_review import LLMReviewTab
+from pihole_manager.gui.tabs.pihole_rules import PiHoleRulesTab
 from pihole_manager.gui.tabs.queries import QueriesTab
 from pihole_manager.gui.tabs.settings import SettingsTab
 from pihole_manager.gui.theme import apply_theme
@@ -69,6 +70,7 @@ class App(tk.Tk):
         self.queries_tab = QueriesTab(notebook, self.executor)
         self.history_tab = HistoryTab(notebook, self.executor)
         self.lists_tab = ListsTab(notebook, self.executor)
+        self.pihole_rules_tab = PiHoleRulesTab(notebook, self.executor)
         self.domains_tab = DomainsTab(notebook, self.executor)
         self.llm_tab = LLMReviewTab(notebook, self.executor)
         self.settings_tab = SettingsTab(notebook, self.executor, self._settings_saved)
@@ -76,6 +78,7 @@ class App(tk.Tk):
         notebook.add(self.queries_tab, text="Live Queries")
         notebook.add(self.history_tab, text="History Browser")
         notebook.add(self.lists_tab, text="Lists")
+        notebook.add(self.pihole_rules_tab, text="Regex & Subscriptions")
         notebook.add(self.domains_tab, text="Domain Database")
         notebook.add(self.llm_tab, text="Review Queue")
         notebook.add(self.settings_tab, text="Settings")
@@ -102,6 +105,7 @@ class App(tk.Tk):
         self.history_tab.reload_preferences()
         self.lists_tab.reload_preferences()
         self.lists_tab.refresh()
+        self.pihole_rules_tab.refresh()
         self.domains_tab.reload_preferences()
         self.domains_tab.refresh()
         self.llm_tab.reload_preferences()

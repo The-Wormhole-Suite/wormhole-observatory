@@ -31,7 +31,7 @@
 ## Priority 4: Pi-hole management
 
 - [x] group assignment for domains and lists
-- regex and subscribed-list views
+- [x] regex and subscribed-list views
 - conflict detection across exact rules, regex rules, groups, and locks
 - list audit jobs with configurable batches and rate limits
 - multiple Pi-hole instances
