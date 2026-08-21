@@ -71,7 +71,14 @@ class GroupAssignmentManager(tk.Toplevel):
 
         ttk.Label(frame, text="Item").grid(row=2, column=0, sticky="w", pady=(10, 0))
         self.item_combo = ttk.Combobox(frame, textvariable=self.item_value, state="readonly")
-        self.item_combo.grid(row=2, column=1, columnspan=2, sticky="ew", padx=(10, 0), pady=(10, 0))
+        self.item_combo.grid(
+            row=2,
+            column=1,
+            columnspan=2,
+            sticky="ew",
+            padx=(10, 0),
+            pady=(10, 0),
+        )
         self.item_combo.bind("<<ComboboxSelected>>", lambda _event: self._sync_selection())
 
         groups_frame = ttk.LabelFrame(frame, text="Groups", padding=8)
@@ -86,12 +93,16 @@ class GroupAssignmentManager(tk.Toplevel):
 
         controls = ttk.Frame(groups_frame)
         controls.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
-        ttk.Button(controls, text="All", command=lambda: self.group_list.selection_set(0, "end")).pack(
-            side="left"
-        )
-        ttk.Button(controls, text="None", command=lambda: self.group_list.selection_clear(0, "end")).pack(
-            side="left", padx=(6, 0)
-        )
+        ttk.Button(
+            controls,
+            text="All",
+            command=lambda: self.group_list.selection_set(0, "end"),
+        ).pack(side="left")
+        ttk.Button(
+            controls,
+            text="None",
+            command=lambda: self.group_list.selection_clear(0, "end"),
+        ).pack(side="left", padx=(6, 0))
         self.apply_button = ttk.Button(controls, text="Apply groups", command=self._apply)
         self.apply_button.pack(side="right")
 
