@@ -9,6 +9,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Any
 
+from pihole_manager.behavior_change import apply_behavior_change_guard
 from pihole_manager.models import Classification, Policy, ResearchFinding, ServiceRole
 
 _DEFAULT_PROFILE_NAME = "compatibility_profiles_v1.json"
@@ -127,7 +128,7 @@ def apply_compatibility_profile(
 ) -> Classification:
     match = compatibility_match_for_domain(classification.domain, profiles)
     if match is None:
-        return classification
+        return apply_behavior_change_guard(classification)
     profile = match.profile
     service_role = _stronger_service_role(classification.service_role, profile.service_role)
     needs_review = classification.needs_review
@@ -143,7 +144,7 @@ def apply_compatibility_profile(
                 review_reason = f"{review_reason} {compatibility_reason}"
         else:
             review_reason = compatibility_reason
-    return replace(
+    enriched = replace(
         classification,
         service=classification.service or profile.name,
         service_role=service_role,
@@ -151,6 +152,7 @@ def apply_compatibility_profile(
         needs_review=needs_review,
         review_reason=review_reason,
     )
+    return apply_behavior_change_guard(enriched)
 
 
 def compatibility_finding(

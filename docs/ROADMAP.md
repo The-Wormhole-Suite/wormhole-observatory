@@ -25,7 +25,7 @@
 - [x] protected services and compatibility profiles
 - [x] manual tags that override LLM tags
 - [x] service dependency graphs
-- historical behavior-change detection
+- [x] historical behavior-change detection
 - evidence freshness policies per tag and source
 
 ## Priority 4: Pi-hole management
