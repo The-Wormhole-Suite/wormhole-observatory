@@ -112,10 +112,7 @@ def build_freshness_context(
             continue
         provider_hours[name] = max(1, int(getattr(provider, "refresh_interval_hours", 24)))
         provider_kinds[name] = str(getattr(provider, "kind", "") or "").strip().lower()
-    global_days = max(
-        1,
-        int(getattr(getattr(options, "research", None), "max_age_days", default_max_age_days)),
-    )
+    global_days = max(1, int(default_max_age_days))
     return EvidenceFreshnessContext(
         domain=_normalize_domain(domain),
         tags=_effective_domain_tags(domain),
