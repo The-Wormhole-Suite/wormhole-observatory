@@ -26,7 +26,7 @@
 - [x] manual tags that override LLM tags
 - [x] service dependency graphs
 - [x] historical behavior-change detection
-- evidence freshness policies per tag and source
+- [x] evidence freshness policies per tag and source
 
 ## Priority 4: Pi-hole management
 
