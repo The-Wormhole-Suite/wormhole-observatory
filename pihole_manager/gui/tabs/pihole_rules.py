@@ -101,7 +101,7 @@ class _ManagedRuleView(ttk.Frame):
             show="headings",
             selectmode="extended",
         )
-        self.tree.heading("value", text=item_label)
+        self.tree.heading("value", text=self.item_label)
         self.tree.heading("enabled", text="Enabled")
         self.tree.heading("groups", text="Groups")
         self.tree.heading("comment", text="Comment")
