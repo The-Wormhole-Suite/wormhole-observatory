@@ -5,6 +5,7 @@ from collections.abc import Callable
 from tkinter import messagebox, ttk
 
 from pihole_manager.config import Options, PiHoleOptions
+from pihole_manager.gui.group_assignment_manager import show_group_assignment_manager
 
 
 class PiHoleSettingsPage(ttk.Frame):
@@ -81,6 +82,24 @@ class PiHoleSettingsPage(ttk.Frame):
             sticky="w",
             pady=(8, 0),
         )
+
+        groups = ttk.LabelFrame(self, text="Pi-hole groups", padding=10)
+        groups.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(16, 0))
+        groups.columnconfigure(0, weight=1)
+        ttk.Label(
+            groups,
+            text=(
+                "Assign existing exact domains and subscribed allow/block lists to Pi-hole groups "
+                "without changing their comment or enabled state."
+            ),
+            wraplength=760,
+            justify="left",
+        ).grid(row=0, column=0, sticky="w")
+        ttk.Button(
+            groups,
+            text="Manage group assignments…",
+            command=lambda: show_group_assignment_manager(self),
+        ).grid(row=1, column=0, sticky="w", pady=(8, 0))
 
     def load(self, options: Options) -> None:
         self.base_url.set(options.pihole.base_url)
