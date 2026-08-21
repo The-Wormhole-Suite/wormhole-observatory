@@ -270,6 +270,95 @@ def fetch_exact_domains(domain_type: str) -> list[dict[str, Any]]:
     return output
 
 
+def fetch_groups() -> list[dict[str, Any]]:
+    payload = get_client().group_management.get_groups()
+    rows = extract_collection(payload, "groups", "data")
+    output: list[dict[str, Any]] = []
+    for row in rows:
+        group_id = row.get("id")
+        name = row.get("name")
+        if group_id is None or name is None:
+            continue
+        try:
+            normalized_id = int(group_id)
+        except (TypeError, ValueError):
+            continue
+        output.append(
+            {
+                "id": normalized_id,
+                "name": str(name),
+                "comment": str(row.get("comment") or ""),
+                "enabled": bool(row.get("enabled", True)),
+            }
+        )
+    return sorted(output, key=lambda item: (str(item["name"]).casefold(), int(item["id"])))
+
+
+def update_exact_domain_groups(
+    domain: str,
+    domain_type: str,
+    groups: list[int],
+    *,
+    comment: str = "",
+    enabled: bool = True,
+) -> Any:
+    if domain_type not in {"allow", "deny"}:
+        raise ValueError("domain_type must be 'allow' or 'deny'")
+    normalized_groups = sorted({int(group_id) for group_id in groups})
+    return get_client().domain_management.update_domain(
+        domain=domain,
+        domain_type=domain_type,
+        kind="exact",
+        comment=comment or None,
+        groups=normalized_groups,
+        enabled=bool(enabled),
+    )
+
+
+def fetch_subscribed_lists(list_type: str | None = None) -> list[dict[str, Any]]:
+    if list_type is not None and list_type not in {"allow", "block"}:
+        raise ValueError("list_type must be 'allow', 'block', or None")
+    payload = get_client().list_management.get_lists(list_type)
+    rows = extract_collection(payload, "lists", "data")
+    output: list[dict[str, Any]] = []
+    for row in rows:
+        address = row.get("address") or row.get("url") or row.get("item")
+        if not address:
+            continue
+        output.append(
+            {
+                "address": str(address),
+                "type": str(row.get("type") or list_type or "block"),
+                "comment": str(row.get("comment") or ""),
+                "enabled": bool(row.get("enabled", True)),
+                "groups": row.get("groups") or [],
+                "date_added": row.get("date_added") or row.get("dateAdded") or "",
+                "date_modified": row.get("date_modified") or row.get("dateModified") or "",
+            }
+        )
+    return output
+
+
+def update_subscribed_list_groups(
+    address: str,
+    list_type: str,
+    groups: list[int],
+    *,
+    comment: str = "",
+    enabled: bool = True,
+) -> Any:
+    if list_type not in {"allow", "block"}:
+        raise ValueError("list_type must be 'allow' or 'block'")
+    normalized_groups = sorted({int(group_id) for group_id in groups})
+    return get_client().list_management.update_list(
+        address=address,
+        list_type=list_type,
+        comment=comment or None,
+        groups=normalized_groups,
+        enabled=bool(enabled),
+    )
+
+
 def add_exact_domain(
     domain: str,
     policy: Policy | str,
