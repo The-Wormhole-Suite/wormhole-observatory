@@ -14,6 +14,7 @@ from pihole6api import (
 from pihole_manager.compatibility_profiles import compatibility_match_for_domain
 from pihole_manager.config import PiHoleOptions, load_options
 from pihole_manager.database import get_domain_lock
+from pihole_manager.pihole_audit import capture_pihole_snapshot, record_pihole_change
 from pihole_manager.models import ConnectionTestResult, Policy
 
 
@@ -305,7 +306,8 @@ def update_exact_domain_groups(
     if domain_type not in {"allow", "deny"}:
         raise ValueError("domain_type must be 'allow' or 'deny'")
     normalized_groups = sorted({int(group_id) for group_id in groups})
-    return get_client().domain_management.update_domain(
+    before = capture_pihole_snapshot("exact_domain", domain_type, domain)
+    result = get_client().domain_management.update_domain(
         domain=domain,
         domain_type=domain_type,
         kind="exact",
@@ -313,6 +315,21 @@ def update_exact_domain_groups(
         groups=normalized_groups,
         enabled=bool(enabled),
     )
+    record_pihole_change(
+        "update",
+        "exact_domain",
+        domain_type,
+        domain,
+        before=before,
+        after={
+            "domain": domain,
+            "type": domain_type,
+            "comment": comment,
+            "groups": normalized_groups,
+            "enabled": bool(enabled),
+        },
+    )
+    return result
 
 
 def fetch_subscribed_lists(list_type: str | None = None) -> list[dict[str, Any]]:
@@ -350,13 +367,29 @@ def update_subscribed_list_groups(
     if list_type not in {"allow", "block"}:
         raise ValueError("list_type must be 'allow' or 'block'")
     normalized_groups = sorted({int(group_id) for group_id in groups})
-    return get_client().list_management.update_list(
+    before = capture_pihole_snapshot("subscribed_list", list_type, address)
+    result = get_client().list_management.update_list(
         address=address,
         list_type=list_type,
         comment=comment or None,
         groups=normalized_groups,
         enabled=bool(enabled),
     )
+    record_pihole_change(
+        "update",
+        "subscribed_list",
+        list_type,
+        address,
+        before=before,
+        after={
+            "address": address,
+            "type": list_type,
+            "comment": comment,
+            "groups": normalized_groups,
+            "enabled": bool(enabled),
+        },
+    )
+    return result
 
 
 def add_exact_domain(
@@ -386,7 +419,7 @@ def add_exact_domain(
             f"({compatibility.matched_pattern}). Blocking requires an explicit compatibility "
             f"override. {compatibility.profile.reason}"
         )
-    return get_client().domain_management.add_domain(
+    result = get_client().domain_management.add_domain(
         domain=domain,
         domain_type=policy_value,
         kind="exact",
@@ -394,6 +427,20 @@ def add_exact_domain(
         groups=None,
         enabled=True,
     )
+    record_pihole_change(
+        "add",
+        "exact_domain",
+        policy_value,
+        domain,
+        after={
+            "domain": domain,
+            "type": policy_value,
+            "comment": comment,
+            "groups": None,
+            "enabled": True,
+        },
+    )
+    return result
 
 
 def delete_exact_domain(domain: str, domain_type: str) -> Any:
@@ -402,4 +449,13 @@ def delete_exact_domain(domain: str, domain_type: str) -> Any:
     lock = get_domain_lock(domain)
     if lock and lock["list_type"] == domain_type:
         raise RuntimeError("Domain is protected and cannot be removed until it is unlocked.")
-    return get_client().domain_management.delete_domain(domain, domain_type, "exact")
+    before = capture_pihole_snapshot("exact_domain", domain_type, domain)
+    result = get_client().domain_management.delete_domain(domain, domain_type, "exact")
+    record_pihole_change(
+        "delete",
+        "exact_domain",
+        domain_type,
+        domain,
+        before=before,
+    )
+    return result
