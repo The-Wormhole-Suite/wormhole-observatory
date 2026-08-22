@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import tkinter as tk
+from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime
 from tkinter import messagebox, ttk
-from typing import Callable
 
 from pihole_manager.pihole_audit import (
     PiHoleAuditEntry,
