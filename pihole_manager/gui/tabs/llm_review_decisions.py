@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import time
-import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 
 from pihole_manager.gui.feedback import show_toast
