@@ -15,6 +15,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 from pihole_manager.config import ExternalTriggerOptions, load_options
 from pihole_manager.database import queue_domains_for_review, queue_due_rechecks, review_queue_get
 from pihole_manager.manual_tag_overrides import domain_browser_search
+from pihole_manager.webapp import WebAsset, get_web_asset
 from pihole_manager.workers import cancel_classifier_jobs
 
 log = logging.getLogger(__name__)
@@ -62,7 +63,8 @@ def _serialize_review(row: dict[str, Any]) -> dict[str, Any]:
         if field in row:
             payload[field] = row[field]
     if "tags" not in payload and "categories" in payload:
-        payload["tags"] = list(payload.get("categories") or [])
+        categories = payload.get("categories")
+        payload["tags"] = list(categories) if isinstance(categories, list | tuple) else []
     payload.pop("categories", None)
     return payload
 
@@ -185,8 +187,30 @@ class ExternalTriggerServer:
                 self.send_header("Content-Type", "application/json; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
                 self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
                 self.end_headers()
                 self.wfile.write(body)
+
+            def _send_web_asset(self, asset: WebAsset) -> None:
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", asset.content_type)
+                self.send_header("Content-Length", str(len(asset.content)))
+                self.send_header("Cache-Control", asset.cache_control)
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("Referrer-Policy", "no-referrer")
+                self.send_header(
+                    "Content-Security-Policy",
+                    "default-src 'self'; connect-src 'self'; img-src 'self'; "
+                    "manifest-src 'self'; script-src 'self'; style-src 'self'; worker-src 'self'",
+                )
+                self.end_headers()
+                self.wfile.write(asset.content)
+
+            def _redirect(self, location: str) -> None:
+                self.send_response(HTTPStatus.TEMPORARY_REDIRECT)
+                self.send_header("Location", location)
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
 
             def _require_auth(self) -> bool:
                 if self._authorized():
@@ -219,10 +243,18 @@ class ExternalTriggerServer:
                 return payload
 
             def do_GET(self) -> None:  # noqa: N802
-                if not self._require_auth():
-                    return
                 parsed = urlsplit(self.path)
                 path = parsed.path
+                if path in {"/", "/app"}:
+                    self._redirect("/app/")
+                    return
+                asset = get_web_asset(path)
+                if asset is not None:
+                    self._send_web_asset(asset)
+                    return
+
+                if not self._require_auth():
+                    return
                 if path == "/health":
                     self._send_json(HTTPStatus.OK, {"status": "ok"})
                     return
@@ -240,6 +272,7 @@ class ExternalTriggerServer:
                                 "queue_review",
                                 "queue_rechecks",
                                 "cancel_jobs",
+                                "review_pwa",
                             ],
                         },
                     )

@@ -31,7 +31,7 @@ pihole-manager = "pihole_manager.__main__:main"
 include = ["pihole_manager*", "pihole6api*"]
 
 [tool.setuptools.package-data]
-pihole_manager = ["data/*.json", "data/*.pem"]
+pihole_manager = ["data/*.json", "data/*.pem", "webapp/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
