@@ -150,3 +150,30 @@ def test_registry_rejects_duplicate_names(monkeypatch, tmp_path) -> None:
         assert "names" in str(exc)
     else:
         raise AssertionError("duplicate Pi-hole instance names must be rejected")
+
+
+def test_registry_active_selection_recovers_from_interrupted_switch(monkeypatch, tmp_path) -> None:
+    fake = FakeKeyring()
+    monkeypatch.setenv("PIHOLE_MANAGER_HOME", str(tmp_path))
+    monkeypatch.setattr(credentials, "_keyring_module", lambda: fake)
+    home = PiHoleInstance(
+        instance_id="home",
+        name="Home",
+        base_url="http://home.local",
+        password="home-secret",
+    )
+    office = PiHoleInstance(
+        instance_id="office",
+        name="Office",
+        base_url="http://office.local",
+        password="office-secret",
+    )
+    save_pihole_instances(
+        PiHoleInstanceRegistry(active_instance_id="office", instances=[home, office])
+    )
+
+    registry = load_pihole_instances(options_from_instance(home))
+
+    assert registry.active_instance_id == "home"
+    assert registry.instances[1].base_url == "http://office.local"
+    assert registry.instances[1].password == "office-secret"
