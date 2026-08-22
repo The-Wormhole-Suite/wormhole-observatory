@@ -18,6 +18,7 @@ from pihole_manager.pihole_rules import (
     update_subscribed_list,
 )
 from pihole_manager.pihole_service import fetch_groups
+from pihole_manager.rule_conflicts import scan_rule_conflicts
 
 FetchFunction = Callable[[str], list[dict[str, Any]]]
 AddFunction = Callable[..., Any]
@@ -32,7 +33,7 @@ class _ManagedRuleView(ttk.Frame):
         executor: ThreadPoolExecutor,
         *,
         key: str,
-        type_values: tuple[str, ...],
+        type_values: tuple[str, str],
         type_labels: dict[str, str],
         fetch_function: FetchFunction,
         add_function: AddFunction,
@@ -53,51 +54,53 @@ class _ManagedRuleView(ttk.Frame):
         self.item_label = item_label
         self.add_prompt = add_prompt
         self.rule_type = tk.StringVar(value=type_values[0])
-        self.search_text = tk.StringVar()
-        self.status = tk.StringVar(value="Not loaded")
+        self.search = tk.StringVar()
+        self.status = tk.StringVar(value="Ready.")
         self._rows: dict[str, dict[str, Any]] = {}
-        self._request_running = False
+        self._groups: list[dict[str, Any]] = []
+        self._loading = False
         self._build_ui()
-        self.after(0, self.refresh)
 
     def _build_ui(self) -> None:
-        toolbar = ttk.Frame(self, padding=8)
-        toolbar.pack(fill="x")
-        ttk.Label(toolbar, text="Type").pack(side="left")
+        controls = ttk.Frame(self, padding=10)
+        controls.pack(fill="x")
+        ttk.Label(controls, text="Type").pack(side="left")
         type_combo = ttk.Combobox(
-            toolbar,
+            controls,
             textvariable=self.rule_type,
             values=self.type_values,
             state="readonly",
-            width=10,
+            width=12,
         )
         type_combo.pack(side="left", padx=(6, 12))
         type_combo.bind("<<ComboboxSelected>>", lambda _event: self.refresh())
-        ttk.Button(toolbar, text="Refresh", command=self.refresh).pack(side="left")
-        ttk.Button(toolbar, text="Add", command=self._add).pack(side="left", padx=(6, 0))
-        ttk.Button(toolbar, text="Edit comment", command=self._edit_comment).pack(
-            side="left", padx=(6, 0)
-        )
-        ttk.Button(toolbar, text="Groups", command=self._edit_groups).pack(
-            side="left", padx=(6, 0)
-        )
-        ttk.Button(toolbar, text="Toggle enabled", command=self._toggle_enabled).pack(
-            side="left", padx=(6, 0)
-        )
-        ttk.Button(toolbar, text="Delete", command=self._delete).pack(side="left", padx=(6, 0))
+        ttk.Label(controls, text="Search").pack(side="left")
+        search_entry = ttk.Entry(controls, textvariable=self.search, width=34)
+        search_entry.pack(side="left", padx=(6, 12), fill="x", expand=True)
+        self.search.trace_add("write", lambda *_args: self._render())
+        ttk.Button(controls, text="Refresh", command=self.refresh).pack(side="left")
 
-        search = ttk.Entry(toolbar, textvariable=self.search_text, width=28)
-        search.pack(side="left", padx=(18, 6))
-        search.bind("<KeyRelease>", lambda _event: self._populate())
-        ttk.Label(toolbar, textvariable=self.status).pack(side="right")
+        actions = ttk.Frame(self, padding=(10, 0, 10, 8))
+        actions.pack(fill="x")
+        ttk.Button(actions, text="Add", command=self._add).pack(side="left")
+        ttk.Button(actions, text="Edit comment", command=self._edit_comment).pack(
+            side="left", padx=(6, 0)
+        )
+        ttk.Button(actions, text="Assign groups", command=self._assign_groups).pack(
+            side="left", padx=(6, 0)
+        )
+        ttk.Button(actions, text="Enable", command=lambda: self._set_enabled(True)).pack(
+            side="left", padx=(6, 0)
+        )
+        ttk.Button(actions, text="Disable", command=lambda: self._set_enabled(False)).pack(
+            side="left", padx=(6, 0)
+        )
+        ttk.Button(actions, text="Delete", command=self._delete).pack(side="right")
 
-        tree_frame = ttk.Frame(self, padding=(8, 0, 8, 8))
-        tree_frame.pack(fill="both", expand=True)
-        tree_frame.rowconfigure(0, weight=1)
-        tree_frame.columnconfigure(0, weight=1)
+        columns = ("value", "enabled", "groups", "comment")
         self.tree = ttk.Treeview(
-            tree_frame,
-            columns=("value", "enabled", "groups", "comment"),
+            self,
+            columns=columns,
             show="headings",
             selectmode="extended",
         )
@@ -105,194 +108,183 @@ class _ManagedRuleView(ttk.Frame):
         self.tree.heading("enabled", text="Enabled")
         self.tree.heading("groups", text="Groups")
         self.tree.heading("comment", text="Comment")
-        self.tree.column("value", width=420, anchor="w")
-        self.tree.column("enabled", width=80, stretch=False, anchor="center")
-        self.tree.column("groups", width=120, anchor="w")
-        self.tree.column("comment", width=320, anchor="w")
-        vertical = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
-        horizontal = ttk.Scrollbar(tree_frame, orient="horizontal", command=self.tree.xview)
-        self.tree.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
-        self.tree.grid(row=0, column=0, sticky="nsew")
-        vertical.grid(row=0, column=1, sticky="ns")
-        horizontal.grid(row=1, column=0, sticky="ew")
-        self.tree.bind("<Double-1>", lambda _event: self._edit_comment())
+        self.tree.column("value", width=390)
+        self.tree.column("enabled", width=80, anchor="center", stretch=False)
+        self.tree.column("groups", width=130, stretch=False)
+        self.tree.column("comment", width=330)
+        scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=scrollbar.set)
+        self.tree.pack(side="left", fill="both", expand=True, padx=(10, 0), pady=(0, 4))
+        scrollbar.pack(side="right", fill="y", padx=(0, 10), pady=(0, 4))
+        ttk.Label(self, textvariable=self.status, padding=(10, 4, 10, 10)).pack(
+            side="bottom", fill="x"
+        )
 
     def refresh(self) -> None:
-        if self._request_running:
+        if self._loading:
             return
-        self._request_running = True
+        self._loading = True
         current_type = self.rule_type.get()
         self.status.set(f"Loading {self.type_labels[current_type]} …")
         future = self.executor.submit(self.fetch_function, current_type)
-        future.add_done_callback(
-            lambda result: self.after(0, self._refresh_done, result, current_type)
-        )
+        future.add_done_callback(lambda result: self.after(0, self._loaded, result))
 
-    def _refresh_done(self, future: Future, requested_type: str) -> None:
-        self._request_running = False
+    def _loaded(self, future: Future) -> None:
+        self._loading = False
         try:
             rows = future.result()
         except Exception as exc:
-            self.status.set(f"Error: {exc}")
-            return
-        if requested_type != self.rule_type.get():
+            self.status.set(f"Could not load entries: {exc}")
             return
         self._rows = {str(row[self.key]): row for row in rows if row.get(self.key)}
-        self._populate()
+        self._render()
+        self.status.set(f"Loaded {len(self._rows)} entries.")
 
-    def _populate(self) -> None:
-        query = self.search_text.get().strip().casefold()
-        selected = set(self._selected_values())
-        self.tree.delete(*self.tree.get_children())
-        visible = 0
-        for value, row in sorted(self._rows.items(), key=lambda item: item[0].casefold()):
-            haystack = f"{value} {row.get('comment', '')}".casefold()
-            if query and query not in haystack:
+    def _render(self) -> None:
+        selected = {self.tree.item(item, "values")[0] for item in self.tree.selection()}
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        query = self.search.get().strip().casefold()
+        for value in sorted(self._rows, key=str.casefold):
+            row = self._rows[value]
+            groups = ", ".join(str(group) for group in row.get("groups") or []) or "—"
+            searchable = f"{value} {row.get('comment', '')} {groups}".casefold()
+            if query and query not in searchable:
                 continue
-            visible += 1
-            groups = ", ".join(str(item) for item in row.get("groups") or []) or "default"
-            self.tree.insert(
+            item = self.tree.insert(
                 "",
                 "end",
-                iid=value,
                 values=(
                     value,
-                    "yes" if row.get("enabled", True) else "no",
+                    "Yes" if row.get("enabled", True) else "No",
                     groups,
-                    row.get("comment", ""),
+                    str(row.get("comment") or ""),
                 ),
             )
             if value in selected:
-                self.tree.selection_add(value)
-        total = len(self._rows)
-        self.status.set(f"{visible} shown · {total} total")
+                self.tree.selection_add(item)
 
     def _selected_values(self) -> list[str]:
-        return [str(item) for item in self.tree.selection() if str(item) in self._rows]
-
-    def _single_selection(self) -> tuple[str, dict[str, Any]] | None:
-        selected = self._selected_values()
-        if len(selected) != 1:
-            messagebox.showinfo(
-                self.item_label,
-                f"Select exactly one {self.item_label.lower()}.",
-                parent=self,
-            )
-            return None
-        value = selected[0]
-        return value, self._rows[value]
+        return [str(self.tree.item(item, "values")[0]) for item in self.tree.selection()]
 
     def _add(self) -> None:
-        value = simpledialog.askstring(
-            f"Add {self.item_label}",
-            self.add_prompt,
+        value = simpledialog.askstring(self.item_label, self.add_prompt, parent=self)
+        if value is None:
+            return
+        value = value.strip()
+        if not value:
+            return
+        comment = simpledialog.askstring(
+            self.item_label,
+            "Optional comment:",
             parent=self,
         )
-        if not value or not value.strip():
-            return
-        comment = simpledialog.askstring("Comment", "Optional comment:", parent=self)
-        if comment is None:
-            return
-        current_type = self.rule_type.get()
-        self.status.set(f"Adding {self.item_label.lower()} …")
+        self.status.set("Adding …")
         future = self.executor.submit(
             self.add_function,
-            value.strip(),
-            current_type,
-            comment=comment,
-            groups=[],
-            enabled=True,
+            value,
+            self.rule_type.get(),
+            comment=(comment or "").strip(),
         )
         future.add_done_callback(lambda result: self.after(0, self._mutation_done, result))
 
     def _edit_comment(self) -> None:
-        selection = self._single_selection()
-        if selection is None:
+        selected = self._selected_values()
+        if len(selected) != 1:
+            messagebox.showinfo(self.item_label, "Select exactly one entry.", parent=self)
             return
-        value, row = selection
+        value = selected[0]
+        row = self._rows[value]
         comment = simpledialog.askstring(
-            "Edit comment",
-            f"Comment for {value}:",
+            self.item_label,
+            "Comment:",
             initialvalue=str(row.get("comment") or ""),
             parent=self,
         )
         if comment is None:
             return
-        self._submit_update(value, row, comment=comment)
+        self._update_rows([value], comment=comment.strip())
 
-    def _edit_groups(self) -> None:
-        selection = self._single_selection()
-        if selection is None or self._request_running:
-            return
-        value, row = selection
-        self._request_running = True
-        self.status.set("Loading Pi-hole groups …")
-        future = self.executor.submit(fetch_groups)
-        future.add_done_callback(
-            lambda result: self.after(0, self._groups_loaded, result, value, row)
-        )
-
-    def _groups_loaded(
-        self,
-        future: Future,
-        value: str,
-        row: dict[str, Any],
-    ) -> None:
-        self._request_running = False
-        try:
-            groups = future.result()
-        except Exception as exc:
-            self.status.set(f"Error: {exc}")
-            return
-        selected = choose_groups(
-            self,
-            groups,
-            row.get("groups") or [],
-            title=f"Groups for {self.item_label}",
-        )
-        if selected is None:
-            self.status.set("Group assignment unchanged.")
-            return
-        self._submit_update(value, row, groups=selected)
-
-    def _toggle_enabled(self) -> None:
+    def _assign_groups(self) -> None:
         selected = self._selected_values()
         if not selected:
             messagebox.showinfo(self.item_label, "Select at least one entry.", parent=self)
             return
-        rows = [(value, self._rows[value]) for value in selected]
-        self.status.set("Updating enabled state …")
-        future = self.executor.submit(self._toggle_worker, rows, self.rule_type.get())
-        future.add_done_callback(lambda result: self.after(0, self._mutation_done, result))
+        self.status.set("Loading groups …")
+        future = self.executor.submit(fetch_groups)
+        future.add_done_callback(
+            lambda result: self.after(0, self._groups_loaded_for_assignment, result, selected)
+        )
 
-    def _toggle_worker(self, rows: list[tuple[str, dict[str, Any]]], rule_type: str) -> None:
-        for value, row in rows:
-            self.update_function(
-                value,
-                rule_type,
-                comment=str(row.get("comment") or ""),
-                groups=row.get("groups") or [],
-                enabled=not bool(row.get("enabled", True)),
-            )
+    def _groups_loaded_for_assignment(self, future: Future, selected: list[str]) -> None:
+        try:
+            self._groups = future.result()
+        except Exception as exc:
+            self.status.set(f"Could not load groups: {exc}")
+            return
+        common: set[int] | None = None
+        for value in selected:
+            groups = {int(group) for group in self._rows[value].get("groups") or []}
+            common = groups if common is None else common & groups
+        chosen = choose_groups(
+            self,
+            self._groups,
+            common or set(),
+            title=f"Assign {self.item_label.lower()} groups",
+            description=(
+                f"Apply the selected Pi-hole groups to {len(selected)} selected "
+                f"{self.item_label.lower()} entr{'y' if len(selected) == 1 else 'ies'}."
+            ),
+        )
+        if chosen is None:
+            self.status.set("Group assignment cancelled.")
+            return
+        self._update_rows(selected, groups=chosen)
 
-    def _submit_update(
+    def _set_enabled(self, enabled: bool) -> None:
+        selected = self._selected_values()
+        if not selected:
+            messagebox.showinfo(self.item_label, "Select at least one entry.", parent=self)
+            return
+        self._update_rows(selected, enabled=enabled)
+
+    def _update_rows(
         self,
-        value: str,
-        row: dict[str, Any],
+        values: list[str],
         *,
         comment: str | None = None,
         groups: list[int] | None = None,
+        enabled: bool | None = None,
     ) -> None:
-        self.status.set(f"Updating {self.item_label.lower()} …")
+        self.status.set("Updating …")
+        current_type = self.rule_type.get()
         future = self.executor.submit(
-            self.update_function,
-            value,
-            self.rule_type.get(),
-            comment=str(row.get("comment") or "") if comment is None else comment,
-            groups=row.get("groups") or [] if groups is None else groups,
-            enabled=bool(row.get("enabled", True)),
+            self._update_worker,
+            values,
+            current_type,
+            comment,
+            groups,
+            enabled,
         )
         future.add_done_callback(lambda result: self.after(0, self._mutation_done, result))
+
+    def _update_worker(
+        self,
+        values: list[str],
+        rule_type: str,
+        comment: str | None,
+        groups: list[int] | None,
+        enabled: bool | None,
+    ) -> None:
+        for value in values:
+            row = self._rows[value]
+            self.update_function(
+                value,
+                rule_type,
+                comment=str(row.get("comment") or "") if comment is None else comment,
+                groups=list(row.get("groups") or []) if groups is None else groups,
+                enabled=bool(row.get("enabled", True)) if enabled is None else enabled,
+            )
 
     def _delete(self) -> None:
         selected = self._selected_values()
@@ -322,6 +314,62 @@ class _ManagedRuleView(ttk.Frame):
             messagebox.showerror(self.item_label, str(exc), parent=self)
             return
         self.refresh()
+
+
+class _ConflictView(ttk.Frame):
+    def __init__(self, master: tk.Misc, executor: ThreadPoolExecutor) -> None:
+        super().__init__(master)
+        self.executor = executor
+        self.status = tk.StringVar(value="Scan active Pi-hole rules for conflicts.")
+
+        controls = ttk.Frame(self, padding=10)
+        controls.pack(fill="x")
+        ttk.Button(controls, text="Scan conflicts", command=self.refresh).pack(side="left")
+        ttk.Label(controls, textvariable=self.status).pack(side="left", padx=(10, 0))
+
+        columns = ("severity", "kind", "subject", "details")
+        self.tree = ttk.Treeview(self, columns=columns, show="headings")
+        self.tree.heading("severity", text="Severity")
+        self.tree.heading("kind", text="Conflict")
+        self.tree.heading("subject", text="Domain / rule")
+        self.tree.heading("details", text="Details")
+        self.tree.column("severity", width=90, stretch=False)
+        self.tree.column("kind", width=180, stretch=False)
+        self.tree.column("subject", width=260)
+        self.tree.column("details", width=520)
+        scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=scrollbar.set)
+        self.tree.pack(side="left", fill="both", expand=True, padx=(10, 0), pady=(0, 10))
+        scrollbar.pack(side="right", fill="y", padx=(0, 10), pady=(0, 10))
+
+    def refresh(self) -> None:
+        self.status.set("Scanning …")
+        future = self.executor.submit(scan_rule_conflicts)
+        future.add_done_callback(lambda result: self.after(0, self._loaded, result))
+
+    def _loaded(self, future: Future) -> None:
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        try:
+            conflicts = future.result()
+        except Exception as exc:
+            self.status.set(f"Scan failed: {exc}")
+            return
+        for conflict in conflicts:
+            self.tree.insert(
+                "",
+                "end",
+                values=(
+                    conflict.severity,
+                    conflict.kind.replace("_", " ").title(),
+                    conflict.subject,
+                    conflict.details,
+                ),
+            )
+        if conflicts:
+            self.status.set(f"Found {len(conflicts)} conflict(s).")
+        else:
+            self.status.set("No active rule conflicts found.")
 
 
 class PiHoleRulesTab(ttk.Frame):
@@ -357,7 +405,9 @@ class PiHoleRulesTab(ttk.Frame):
             add_prompt="List URL/address to add:",
         )
         notebook.add(self.regex_view, text="Regex rules")
+        self.conflict_view = _ConflictView(notebook, executor)
         notebook.add(self.subscription_view, text="Subscribed lists")
+        notebook.add(self.conflict_view, text="Conflicts")
 
     def refresh(self) -> None:
         self.regex_view.refresh()

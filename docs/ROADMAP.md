@@ -1,30 +1,33 @@
-# Roadmap
+# Wormhole Observatory Roadmap
 
-## Priority 1: Stability and migration
+This roadmap is the source of truth for the active development branch.
 
-- [x] versioned SQLite migrations with rollback tests
-- [x] operating-system credential stores
-- [x] integration tests against multiple Pi-hole v6 minor versions
-- [x] connection health state and clearer offline behavior
-- [x] cancellable long-running evidence and LLM jobs
-- [x] optional authenticated external trigger adapter for scheduled or MCP-driven review jobs
+## Priority 1: Stability and correctness
 
-## Priority 2: Evidence quality
+- [x] Pi-hole v6 API compatibility
+- [x] resilient connection handling and retries
+- [x] cancellation for long-running jobs
+- [x] query pagination and safe background loading
+- [x] updater hardening and signed provider-registry support
+- [x] Windows/Linux packaging and CI coverage
 
-- [x] source-quality scoring and contradiction detection
-- [x] locally indexed additional list repositories with provenance
-- [x] URLhaus integration after its authenticated feed contract is implemented and tested
-- [x] licensing review before enabling non-commercial datasets in distributed builds
-- [x] certificate-transparency and additional reputation adapters
-- [x] provider-native browsing support for LLMs that can cite primary sources
-- [x] evidence citations in every generated description
-- [x] golden datasets for source, prompt, and model comparison
+## Priority 2: LLM analysis and evidence pipeline
+
+- [x] quota-aware LLM analysis profiles and provider pools
+- [x] provider presets and provider registry
+- [x] locally indexed repository evidence sources
+- [x] authenticated URLhaus evidence
+- [x] evidence licensing enforcement
+- [x] certificate-transparency and reputation adapters
+- [x] provider-native browsing support
+- [x] evidence citations in generated descriptions
+- [x] reproducible golden datasets
+- [x] protected service compatibility profiles
+- [x] manual tag overrides
+- [x] service dependency graphs
 
 ## Priority 3: Domain intelligence
 
-- [x] protected services and compatibility profiles
-- [x] manual tags that override LLM tags
-- [x] service dependency graphs
 - [x] historical behavior-change detection
 - [x] evidence freshness policies per tag and source
 
@@ -32,23 +35,28 @@
 
 - [x] group assignment for domains and lists
 - [x] regex and subscribed-list views
-- conflict detection across exact rules, regex rules, groups, and locks
+- [x] conflict detection across exact rules, regex rules, groups, and locks
 - list audit jobs with configurable batches and rate limits
 - multiple Pi-hole instances
-- audit log and one-click rollback
+- audit log with one-click rollback
 
-## Priority 5: Review clients
+## Priority 5: Operator experience
 
-- authenticated local HTTP API
-- responsive web UI and PWA
-- ntfy and UnifiedPush notifications with deep links
-- allow, deny, postpone, ignore, and never-ask-again decisions
-- LAN and Tailscale access without a required public cloud
+- richer dashboards and operational metrics
+- import/export workflows
+- more contextual tooltips and guided explanations
+- batch review ergonomics
+- saved filters and table layouts
 
-## Priority 6: Distribution
+## Priority 6: Distribution and integrations
 
-- signed and reproducible Windows and Linux Onedir releases
-- code-signing and release provenance
-- multi-architecture Docker images with persistent volumes
-- Home Assistant app repository based on the container image
-- release retention and cleanup policy for development builds
+- Home Assistant add-on
+- Docker image and documented compose setup
+- release channels and update policy
+- external trigger / MCP-oriented workflows
+
+## Later / research
+
+- cross-instance policy comparison
+- automatic compatibility learning from breakage reports
+- optional Wormhole Connector integration
