@@ -1,17 +1,18 @@
 # Local Review HTTP API
 
-Wormhole Observatory exposes a small versioned HTTP API through the existing authenticated review-trigger server. The API is intended for local review clients, later web/PWA clients, schedulers, and trusted LAN/Tailscale integrations.
+Wormhole Observatory exposes a small versioned HTTP API through the existing authenticated review-trigger server. The API is intended for local review clients, the bundled web/PWA client, schedulers, and trusted LAN/Tailscale integrations.
 
 ## Security model
 
-The server is disabled by default. Configure it under **Settings → Application → External review trigger**. That label is retained for configuration compatibility even though the server now also provides read-only review endpoints.
+The server is disabled by default. Configure it under **Settings → Application → External review trigger**. That label is retained for configuration compatibility even though the server now also provides the review API and PWA.
 
-- Every endpoint, including `/health`, requires `Authorization: Bearer <token>`.
+- Every API endpoint, including `/health`, requires `Authorization: Bearer <token>`.
 - The default bind address is `127.0.0.1`.
 - Binding to a non-loopback address is rejected unless remote access is explicitly enabled.
-- Responses use `Cache-Control: no-store`.
+- API responses use `Cache-Control: no-store`.
 - Request bodies are capped at 64 KiB.
 - Review list sizes and queued-domain batches are capped by `max_domains_per_request`.
+- The static `/app/*` PWA shell is public but contains no data or token; all of its data requests still use the authenticated API.
 
 Do not put the bearer token in a URL or query string.
 
@@ -49,6 +50,10 @@ Queues domains whose scheduled recheck is due.
 
 Cancels currently cancellable classifier jobs.
 
+## Bundled web client
+
+Opening `/` redirects to `/app/`. The web client is responsive and installable as a PWA when the browser considers the origin a secure context. See `docs/REVIEW_PWA.md` for details.
+
 ## Example
 
 ```bash
@@ -56,4 +61,4 @@ curl -H "Authorization: Bearer $WORMHOLE_TOKEN" \
   http://127.0.0.1:8765/v1/reviews?limit=25
 ```
 
-Review decisions such as allow, deny, postpone, ignore, and never-ask-again are intentionally not part of this first API contract. They are a separate roadmap item so their persistence and rollback semantics can be finalized before exposing write endpoints to web/PWA clients.
+Review decisions such as allow, deny, postpone, ignore, and never-ask-again are intentionally not part of this API contract yet. They are a separate roadmap item so their persistence and rollback semantics can be finalized before exposing write endpoints to web/PWA clients.

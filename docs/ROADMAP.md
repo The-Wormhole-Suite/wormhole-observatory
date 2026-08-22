@@ -40,7 +40,7 @@
 ## Priority 5: Review clients
 
 - [x] authenticated local HTTP API
-- responsive web UI and PWA
+- [x] responsive web UI and PWA
 - ntfy and UnifiedPush notifications with deep links
 - allow, deny, postpone, ignore, and never-ask-again decisions
 - LAN and Tailscale access without a required public cloud
