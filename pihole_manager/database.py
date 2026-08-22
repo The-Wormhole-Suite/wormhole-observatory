@@ -7,6 +7,8 @@ from typing import Any
 from pihole_manager import database_analysis as _database_analysis
 from pihole_manager import database_features as _database_features
 from pihole_manager import database_review as _database_review
+from pihole_manager import manual_tag_overrides as _manual_tag_overrides
+from pihole_manager import review_preferences as _review_preferences
 from pihole_manager.behavior_change import historical_behavior_change
 from pihole_manager.database_analysis import *  # noqa: F403
 from pihole_manager.database_core import *  # noqa: F403
@@ -22,11 +24,15 @@ from pihole_manager.manual_tag_overrides import (  # noqa: F401
     domain_browser_search,
     effective_tags,
     manual_tags,
-    review_get,
-    review_queue_items,
     set_manual_tags,
 )
-from pihole_manager.models import Classification, ResearchFinding
+from pihole_manager.models import Classification, ResearchFinding, ReviewPriority
+from pihole_manager.review_preferences import (  # noqa: F401
+    clear_review_preference,
+    preference_blocks_review,
+    review_preference_get,
+    set_review_preference,
+)
 
 
 def save_research_findings(
@@ -113,3 +119,46 @@ def domain_details(domain: str) -> dict[str, Any]:
     data = dict(_database_features.domain_details(domain) or {})
     data["behavior_change"] = historical_behavior_change(domain).as_dict()
     return data
+
+
+def review_get(
+    limit: int = 200,
+    status: str | None = None,
+    needs_review: bool | None = None,
+) -> list[dict[str, Any]]:
+    rows = _manual_tag_overrides.review_get(
+        limit=limit,
+        status=status,
+        needs_review=needs_review,
+    )
+    return _review_preferences.apply_review_preferences(
+        rows,
+        hide_blocked=needs_review is True,
+    )
+
+
+def review_queue_get(limit: int = 2_000) -> list[dict[str, Any]]:
+    rows = _database_review.review_queue_get(limit=limit)
+    return _review_preferences.apply_review_preferences(rows, hide_blocked=True)[: max(1, int(limit))]
+
+
+def review_queue_items(limit: int = 500) -> list[dict[str, Any]]:
+    rows = _manual_tag_overrides.review_queue_items(limit=limit)
+    return _review_preferences.apply_review_preferences(rows, hide_blocked=True)[: max(1, int(limit))]
+
+
+def create_review_task(
+    domain: str,
+    reason: str,
+    *,
+    priority: ReviewPriority | str = ReviewPriority.NORMAL,
+    source: str = "",
+) -> int:
+    if _review_preferences.preference_blocks_review(domain):
+        return 0
+    return _database_features.create_review_task(
+        domain,
+        reason,
+        priority=priority,
+        source=source,
+    )
