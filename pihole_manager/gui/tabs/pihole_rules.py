@@ -7,6 +7,7 @@ from tkinter import messagebox, simpledialog, ttk
 from typing import Any
 
 from pihole_manager.gui.group_assignment import choose_groups
+from pihole_manager.gui.tabs.list_audit import ListAuditTab
 from pihole_manager.pihole_rules import (
     add_regex_domain,
     add_subscribed_list,
@@ -408,7 +409,10 @@ class PiHoleRulesTab(ttk.Frame):
         self.conflict_view = _ConflictView(notebook, executor)
         notebook.add(self.subscription_view, text="Subscribed lists")
         notebook.add(self.conflict_view, text="Conflicts")
+        self.list_audit_view = ListAuditTab(notebook, executor)
+        notebook.add(self.list_audit_view, text="List audit")
 
     def refresh(self) -> None:
         self.regex_view.refresh()
         self.subscription_view.refresh()
+        self.list_audit_view.refresh_status()
