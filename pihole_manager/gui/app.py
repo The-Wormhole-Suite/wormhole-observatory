@@ -18,6 +18,7 @@ from pihole_manager.gui.tabs.pihole_rules import PiHoleRulesTab
 from pihole_manager.gui.tabs.queries import QueriesTab
 from pihole_manager.gui.tabs.settings import SettingsTab
 from pihole_manager.gui.theme import apply_theme
+from pihole_manager.list_audit_worker import get_list_auditor, stop_list_auditor
 from pihole_manager.logging_setup import setup_logging
 from pihole_manager.pihole_service import close_client, test_connection
 from pihole_manager.provider_registry import refresh_provider_registry_if_due
@@ -84,6 +85,7 @@ class App(tk.Tk):
         notebook.add(self.settings_tab, text="Settings")
 
         get_scanner()
+        get_list_auditor()
         get_classifier()
         self._configure_external_trigger(options)
         self.after(400, self._schedule_health_check)
@@ -200,6 +202,7 @@ class App(tk.Tk):
         self.llm_tab.cancel_active_work(notify=False)
         self.settings_tab.cancel_active_work(notify=False)
         stop_external_trigger()
+        stop_list_auditor()
         stop_workers()
         close_client()
         self.executor.shutdown(wait=False, cancel_futures=True)
