@@ -3,9 +3,10 @@ from __future__ import annotations
 import sqlite3
 import threading
 import time
+from collections.abc import Iterable
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from pihole_manager.config import app_directory
 
@@ -105,7 +106,13 @@ def review_preference_get(domain: str) -> dict[str, Any] | None:
 
 
 def review_preferences_for_domains(domains: Iterable[str]) -> dict[str, dict[str, Any]]:
-    normalized = sorted({_normalize_domain(domain) for domain in domains if _normalize_domain(domain)})
+    normalized = sorted(
+        {
+            normalized_domain
+            for domain in domains
+            if (normalized_domain := _normalize_domain(domain))
+        }
+    )
     if not normalized:
         return {}
     _init_db()
