@@ -43,7 +43,7 @@
 - [x] responsive web UI and PWA
 - [x] ntfy and UnifiedPush notifications with deep links
 - [x] allow, deny, postpone, ignore, and never-ask-again decisions
-- LAN and Tailscale access without a required public cloud
+- [x] LAN and Tailscale access without a required public cloud
 
 ## Priority 6: Distribution
 

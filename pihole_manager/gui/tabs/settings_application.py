@@ -11,6 +11,11 @@ from tkinter import messagebox, ttk
 
 from pihole_manager import __version__
 from pihole_manager.config import Options, load_options, save_options
+from pihole_manager.network_access import (
+    ReviewAccessOptions,
+    load_review_access_options,
+    save_review_access_options,
+)
 from pihole_manager.updater import (
     InstallPlan,
     UpdateInfo,
@@ -48,7 +53,7 @@ class ApplicationSettingsPage(ttk.Frame):
         self.external_trigger_host = tk.StringVar()
         self.external_trigger_port = tk.StringVar()
         self.external_trigger_token = tk.StringVar()
-        self.external_trigger_allow_remote = tk.BooleanVar()
+        self.external_trigger_access_mode = tk.StringVar()
 
         ttk.Checkbutton(
             self,
@@ -152,16 +157,26 @@ class ApplicationSettingsPage(ttk.Frame):
             text="Generate",
             command=self._generate_trigger_token,
         ).grid(row=3, column=2, sticky="e", padx=(8, 0), pady=3)
-        ttk.Checkbutton(
+        ttk.Label(trigger, text="Client access").grid(row=4, column=0, sticky="w", pady=3)
+        ttk.Combobox(
             trigger,
-            text="Allow binding to non-loopback addresses",
-            variable=self.external_trigger_allow_remote,
-        ).grid(row=4, column=0, columnspan=3, sticky="w", pady=(6, 3))
+            textvariable=self.external_trigger_access_mode,
+            values=(
+                "Local only",
+                "LAN only",
+                "Tailscale only",
+                "LAN + Tailscale",
+                "Any network (advanced)",
+            ),
+            state="readonly",
+            width=28,
+        ).grid(row=4, column=1, columnspan=2, sticky="w", padx=(10, 0), pady=3)
         ttk.Label(
             trigger,
             text=(
-                "Default is 127.0.0.1 only. Remote binding should be enabled only "
-                "for a trusted LAN or VPN such as Tailscale."
+                "Requests are filtered by source network before authentication. "
+                "For an installable PWA over Tailscale, prefer Tailscale Serve HTTPS "
+                "while Observatory stays bound to 127.0.0.1."
             ),
             wraplength=720,
             justify="left",
@@ -201,7 +216,15 @@ class ApplicationSettingsPage(ttk.Frame):
         self.external_trigger_host.set(options.external_trigger.bind_host)
         self.external_trigger_port.set(str(options.external_trigger.port))
         self.external_trigger_token.set(options.external_trigger.token)
-        self.external_trigger_allow_remote.set(options.external_trigger.allow_remote)
+        access_labels = {
+            "local": "Local only",
+            "lan": "LAN only",
+            "tailscale": "Tailscale only",
+            "lan_tailscale": "LAN + Tailscale",
+            "any": "Any network (advanced)",
+        }
+        access = load_review_access_options(options.external_trigger)
+        self.external_trigger_access_mode.set(access_labels.get(access.mode, "Local only"))
 
     def store(self, options: Options) -> bool:
         try:
@@ -240,7 +263,16 @@ class ApplicationSettingsPage(ttk.Frame):
         )
         options.external_trigger.port = trigger_port
         options.external_trigger.token = trigger_token
-        options.external_trigger.allow_remote = self.external_trigger_allow_remote.get()
+        access_modes = {
+            "Local only": "local",
+            "LAN only": "lan",
+            "Tailscale only": "tailscale",
+            "LAN + Tailscale": "lan_tailscale",
+            "Any network (advanced)": "any",
+        }
+        access_mode = access_modes.get(self.external_trigger_access_mode.get(), "local")
+        options.external_trigger.allow_remote = access_mode != "local"
+        save_review_access_options(ReviewAccessOptions(mode=access_mode))
         return True
 
     def _generate_trigger_token(self) -> None:

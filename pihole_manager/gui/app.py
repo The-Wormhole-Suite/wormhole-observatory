@@ -9,7 +9,6 @@ from tkinter import ttk
 from pihole_manager import __version__
 from pihole_manager.config import load_options, save_options
 from pihole_manager.database import init_db
-from pihole_manager.external_trigger import configure_external_trigger, stop_external_trigger
 from pihole_manager.gui.tabs.domains import DomainsTab
 from pihole_manager.gui.tabs.history import HistoryTab
 from pihole_manager.gui.tabs.lists import ListsTab
@@ -21,6 +20,7 @@ from pihole_manager.gui.tabs.settings import SettingsTab
 from pihole_manager.gui.theme import apply_theme
 from pihole_manager.list_audit_worker import get_list_auditor, stop_list_auditor
 from pihole_manager.logging_setup import setup_logging
+from pihole_manager.network_access import configure_external_trigger, stop_external_trigger
 from pihole_manager.pihole_service import close_client, test_connection
 from pihole_manager.provider_registry import refresh_provider_registry_if_due
 from pihole_manager.workers import (
