@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from pihole_manager.pihole_audit import capture_pihole_snapshot, record_pihole_change
 from pihole_manager.pihole_service import extract_collection, get_client
 
 
@@ -40,14 +41,29 @@ def add_regex_domain(
     value = domain.strip()
     if not value:
         raise ValueError("regex domain must not be empty")
-    return get_client().domain_management.add_domain(
+    normalized_groups = _normalize_groups(groups)
+    result = get_client().domain_management.add_domain(
         value,
         domain_type,
         "regex",
         comment=comment or None,
-        groups=_normalize_groups(groups),
+        groups=normalized_groups,
         enabled=bool(enabled),
     )
+    record_pihole_change(
+        "add",
+        "regex_domain",
+        domain_type,
+        value,
+        after={
+            "domain": value,
+            "type": domain_type,
+            "comment": comment,
+            "groups": normalized_groups,
+            "enabled": bool(enabled),
+        },
+    )
+    return result
 
 
 def update_regex_domain(
@@ -60,20 +76,46 @@ def update_regex_domain(
 ) -> Any:
     if domain_type not in {"allow", "deny"}:
         raise ValueError("domain_type must be 'allow' or 'deny'")
-    return get_client().domain_management.update_domain(
+    normalized_groups = _normalize_groups(groups)
+    before = capture_pihole_snapshot("regex_domain", domain_type, domain)
+    result = get_client().domain_management.update_domain(
         domain,
         domain_type,
         "regex",
         comment=comment or None,
-        groups=_normalize_groups(groups),
+        groups=normalized_groups,
         enabled=bool(enabled),
     )
+    record_pihole_change(
+        "update",
+        "regex_domain",
+        domain_type,
+        domain,
+        before=before,
+        after={
+            "domain": domain,
+            "type": domain_type,
+            "comment": comment,
+            "groups": normalized_groups,
+            "enabled": bool(enabled),
+        },
+    )
+    return result
 
 
 def delete_regex_domain(domain: str, domain_type: str) -> Any:
     if domain_type not in {"allow", "deny"}:
         raise ValueError("domain_type must be 'allow' or 'deny'")
-    return get_client().domain_management.delete_domain(domain, domain_type, "regex")
+    before = capture_pihole_snapshot("regex_domain", domain_type, domain)
+    result = get_client().domain_management.delete_domain(domain, domain_type, "regex")
+    record_pihole_change(
+        "delete",
+        "regex_domain",
+        domain_type,
+        domain,
+        before=before,
+    )
+    return result
 
 
 def fetch_subscribed_lists(list_type: str) -> list[dict[str, Any]]:
@@ -111,13 +153,28 @@ def add_subscribed_list(
     value = address.strip()
     if not value:
         raise ValueError("list address must not be empty")
-    return get_client().list_management.add_list(
+    normalized_groups = _normalize_groups(groups)
+    result = get_client().list_management.add_list(
         value,
         list_type,
         comment=comment or None,
-        groups=_normalize_groups(groups),
+        groups=normalized_groups,
         enabled=bool(enabled),
     )
+    record_pihole_change(
+        "add",
+        "subscribed_list",
+        list_type,
+        value,
+        after={
+            "address": value,
+            "type": list_type,
+            "comment": comment,
+            "groups": normalized_groups,
+            "enabled": bool(enabled),
+        },
+    )
+    return result
 
 
 def update_subscribed_list(
@@ -130,19 +187,45 @@ def update_subscribed_list(
 ) -> Any:
     if list_type not in {"allow", "block"}:
         raise ValueError("list_type must be 'allow' or 'block'")
-    return get_client().list_management.update_list(
+    normalized_groups = _normalize_groups(groups)
+    before = capture_pihole_snapshot("subscribed_list", list_type, address)
+    result = get_client().list_management.update_list(
         address,
         list_type,
         comment=comment or None,
-        groups=_normalize_groups(groups),
+        groups=normalized_groups,
         enabled=bool(enabled),
     )
+    record_pihole_change(
+        "update",
+        "subscribed_list",
+        list_type,
+        address,
+        before=before,
+        after={
+            "address": address,
+            "type": list_type,
+            "comment": comment,
+            "groups": normalized_groups,
+            "enabled": bool(enabled),
+        },
+    )
+    return result
 
 
 def delete_subscribed_list(address: str, list_type: str) -> Any:
     if list_type not in {"allow", "block"}:
         raise ValueError("list_type must be 'allow' or 'block'")
-    return get_client().list_management.delete_list(address, list_type)
+    before = capture_pihole_snapshot("subscribed_list", list_type, address)
+    result = get_client().list_management.delete_list(address, list_type)
+    record_pihole_change(
+        "delete",
+        "subscribed_list",
+        list_type,
+        address,
+        before=before,
+    )
+    return result
 
 
 def _normalize_groups(groups: Any) -> list[int]:
