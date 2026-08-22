@@ -2,14 +2,11 @@
 set -eu
 cd "$(dirname "$0")"
 
-PYTHON_VERSION="3.11"
 PIP_VERSION="26.2.1"
 RELEASE_DIR="${PIHOLE_MANAGER_RELEASE_DIR:-release}"
 
-if [ ! -d .venv ]; then
-    python${PYTHON_VERSION} -m venv .venv
-fi
-
+rm -rf .venv
+python -m venv .venv
 PYTHON="$(pwd)/.venv/bin/python"
 export PYTHONHASHSEED="${PYTHONHASHSEED:-1}"
 if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
