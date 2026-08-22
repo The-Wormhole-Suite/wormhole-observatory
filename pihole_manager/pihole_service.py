@@ -14,8 +14,8 @@ from pihole6api import (
 from pihole_manager.compatibility_profiles import compatibility_match_for_domain
 from pihole_manager.config import PiHoleOptions, load_options
 from pihole_manager.database import get_domain_lock
-from pihole_manager.pihole_audit import capture_pihole_snapshot, record_pihole_change
 from pihole_manager.models import ConnectionTestResult, Policy
+from pihole_manager.pihole_audit import capture_pihole_snapshot, record_pihole_change
 
 
 @dataclass(frozen=True, slots=True)
