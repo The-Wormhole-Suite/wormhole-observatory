@@ -10,6 +10,7 @@ from pihole_manager.gui.scrollable import ScrollableFrame
 from pihole_manager.gui.tabs.settings_analysis_pools import AnalysisPoolsSettingsPage
 from pihole_manager.gui.tabs.settings_application import ApplicationSettingsPage
 from pihole_manager.gui.tabs.settings_automation import AutomationSettingsPage
+from pihole_manager.gui.tabs.settings_notifications import NotificationsSettingsPage
 from pihole_manager.gui.tabs.settings_pihole import PiHoleSettingsPage
 from pihole_manager.gui.tabs.settings_profiles import ProfilesSettingsPage
 from pihole_manager.gui.tabs.settings_providers import ProvidersSettingsPage
@@ -56,6 +57,7 @@ class SettingsTab(ttk.Frame):
             ("Prompt Profiles", ProfilesSettingsPage),
             ("Evidence Sources", ResearchSettingsPage),
             ("Application", ApplicationSettingsPage),
+            ("Notifications", NotificationsSettingsPage),
         )
         self.pages: list[ttk.Frame] = []
         self.page_wrappers: list[ScrollableFrame] = []
