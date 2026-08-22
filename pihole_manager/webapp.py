@@ -15,11 +15,6 @@ _ROUTES: dict[str, tuple[str, str, str]] = {
     "/app/": ("index.html", "text/html; charset=utf-8", "no-cache"),
     "/app/app.css": ("app.css", "text/css; charset=utf-8", "public, max-age=3600"),
     "/app/app.js": ("app.js", "text/javascript; charset=utf-8", "public, max-age=3600"),
-    "/app/deep-link.js": (
-        "deep-link.js",
-        "text/javascript; charset=utf-8",
-        "public, max-age=3600",
-    ),
     "/app/icon.svg": ("icon.svg", "image/svg+xml", "public, max-age=86400"),
     "/manifest.webmanifest": (
         "manifest.webmanifest",

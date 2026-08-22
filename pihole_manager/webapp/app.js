@@ -2,6 +2,7 @@ const state = {
   token: sessionStorage.getItem("wormholeToken") || "",
   items: [],
   query: "",
+  deepLinkDomain: new URLSearchParams(window.location.search).get("domain")?.trim().toLowerCase() || "",
 };
 
 const authPanel = document.querySelector("#authPanel");
@@ -128,6 +129,14 @@ async function loadReviews() {
     updatedAt.textContent = `Updated ${new Date().toLocaleTimeString()}`;
     setConnection("Connected", "online");
     render();
+    if (state.deepLinkDomain) {
+      const domain = state.deepLinkDomain;
+      state.deepLinkDomain = "";
+      await openDetails(domain);
+      const clean = new URL(window.location.href);
+      clean.searchParams.delete("domain");
+      history.replaceState({}, "", `${clean.pathname}${clean.search}${clean.hash}`);
+    }
   } catch (error) {
     setConnection(error.status === 401 ? "Locked" : "Offline", "offline");
     if (error.status === 401) {
