@@ -53,7 +53,9 @@ class NotificationsSettingsPage(ttk.Frame):
             text="Enable notification sound",
             variable=self.enable_sound,
         ).grid(row=1, column=0, sticky="w", pady=3)
-        ttk.Label(local, text="Minimum interval (seconds)").grid(row=2, column=0, sticky="w", pady=3)
+        ttk.Label(local, text="Minimum interval (seconds)").grid(
+            row=2, column=0, sticky="w", pady=3
+        )
         ttk.Entry(local, textvariable=self.rate_limit, width=10).grid(
             row=2, column=1, sticky="w", padx=(10, 0), pady=3
         )
@@ -232,7 +234,9 @@ class NotificationsSettingsPage(ttk.Frame):
         try:
             save_push_options(push)
         except Exception as exc:
-            messagebox.showerror("Notifications", f"Could not save push settings: {exc}", parent=self)
+            messagebox.showerror(
+                "Notifications", f"Could not save push settings: {exc}", parent=self
+            )
             return False
         self._update_vapid_label(push)
         return True
