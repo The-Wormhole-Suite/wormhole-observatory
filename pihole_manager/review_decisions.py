@@ -25,9 +25,8 @@ def _resolve_open_review_tasks(domain: str, decision: str) -> None:
         )
 
 
-def _opposite_exact_rule_exists(domain: str, desired: str) -> bool:
-    opposite = "deny" if desired == "allow" else "allow"
-    return any(str(row.get("domain") or "") == domain for row in fetch_exact_domains(opposite))
+def _exact_rule_exists(domain: str, policy: str) -> bool:
+    return any(str(row.get("domain") or "") == domain for row in fetch_exact_domains(policy))
 
 
 def apply_review_decision(
@@ -47,12 +46,14 @@ def apply_review_decision(
     if selected in {"allow", "deny"}:
         policy = Policy.ALLOW if selected == "allow" else Policy.DENY
         opposite = "deny" if selected == "allow" else "allow"
-        opposite_exists = _opposite_exact_rule_exists(normalized, selected)
-        add_exact_domain(
-            normalized,
-            policy,
-            comment=comment.strip() or f"Review decision: {selected}",
-        )
+        desired_exists = _exact_rule_exists(normalized, selected)
+        opposite_exists = _exact_rule_exists(normalized, opposite)
+        if not desired_exists:
+            add_exact_domain(
+                normalized,
+                policy,
+                comment=comment.strip() or f"Review decision: {selected}",
+            )
         if opposite_exists:
             delete_exact_domain(normalized, opposite)
         mark_action_applied(normalized, selected)
