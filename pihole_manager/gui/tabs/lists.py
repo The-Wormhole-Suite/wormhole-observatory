@@ -23,7 +23,7 @@ from pihole_manager.pihole_service import (
     add_exact_domain,
     delete_exact_domain,
     fetch_exact_domains,
-    get_client,
+    update_exact_domain_groups,
 )
 
 _COLUMNS = ("selected", "locked", "domain", "enabled", "comment", "tags", "details")
@@ -439,12 +439,11 @@ class ListsTab(ttk.Frame):
             return
         selected_type = self.list_type.get()
         future = self.executor.submit(
-            get_client().domain_management.update_domain,
+            update_exact_domain_groups,
             domain,
             selected_type,
-            "exact",
+            row.get("groups") or [],
             comment=comment,
-            groups=row.get("groups") or [],
             enabled=bool(row.get("enabled", True)),
         )
         future.add_done_callback(lambda item: self.after(0, self._mutation_done, item))
