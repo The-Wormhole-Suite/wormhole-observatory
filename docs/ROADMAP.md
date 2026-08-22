@@ -35,7 +35,7 @@
 - [x] conflict detection across exact rules, regex rules, groups, and locks
 - [x] list audit jobs with configurable batches and rate limits
 - [x] multiple Pi-hole instances
-- audit log and one-click rollback
+- [x] audit log and one-click rollback
 
 ## Priority 5: Review clients
 
