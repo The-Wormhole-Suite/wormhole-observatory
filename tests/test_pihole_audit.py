@@ -7,6 +7,8 @@ import pytest
 from pihole_manager import pihole_service
 from pihole_manager.database import init_db
 from pihole_manager.pihole_audit import (
+    AUDIT_SCHEMA_VERSION,
+    audit_database_path,
     get_pihole_audit_entry,
     list_pihole_audit,
     record_pihole_change,
@@ -139,12 +141,13 @@ def test_rollback_refuses_to_overwrite_newer_resource_state(monkeypatch, tmp_pat
         rollback_pihole_audit(entry_id)
 
 
-def test_database_schema_contains_pihole_audit_table(monkeypatch, tmp_path) -> None:
+def test_audit_database_is_versioned_and_contains_log_table(monkeypatch, tmp_path) -> None:
     import sqlite3
 
     monkeypatch.setenv("PIHOLE_MANAGER_HOME", str(tmp_path))
     init_db()
-    connection = sqlite3.connect(tmp_path / "pihole_manager.sqlite3")
+    list_pihole_audit()
+    connection = sqlite3.connect(audit_database_path())
     version = connection.execute(
         "SELECT value FROM schema_meta WHERE key = 'schema_version'"
     ).fetchone()[0]
@@ -153,5 +156,5 @@ def test_database_schema_contains_pihole_audit_table(monkeypatch, tmp_path) -> N
     ).fetchone()
     connection.close()
 
-    assert version == "13"
+    assert version == str(AUDIT_SCHEMA_VERSION)
     assert table == ("pihole_audit_log",)
