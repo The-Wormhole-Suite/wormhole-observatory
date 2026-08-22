@@ -138,7 +138,7 @@ def test_unifiedpush_encrypts_webpush_payload_with_deep_link(monkeypatch) -> Non
         "keys": {"p256dh": "p256dh", "auth": "auth"},
     }
     assert captured["content_encoding"] == "aes128gcm"
-    assert captured["vapid_private_key"] == private_key
+    assert captured["vapid_private_key"] == private_key.strip()
     assert captured["vapid_claims"] == {"sub": "mailto:test@example.test"}
     payload = json.loads(str(captured["data"]))
     assert payload["domain"] == "tracker.example"
