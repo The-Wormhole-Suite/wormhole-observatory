@@ -15,6 +15,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 from pihole_manager.config import ExternalTriggerOptions, load_options
 from pihole_manager.database import queue_domains_for_review, queue_due_rechecks, review_queue_get
 from pihole_manager.manual_tag_overrides import domain_browser_search
+from pihole_manager.review_decisions import apply_review_decision
 from pihole_manager.webapp import WebAsset, get_web_asset
 from pihole_manager.workers import cancel_classifier_jobs
 
@@ -25,6 +26,7 @@ CancelCallback = Callable[..., int]
 RecheckCallback = Callable[..., int]
 ReviewQueueCallback = Callable[..., list[dict[str, Any]]]
 ReviewLookupCallback = Callable[[str], dict[str, Any] | None]
+DecisionCallback = Callable[..., dict[str, Any]]
 _MAX_BODY_BYTES = 64 * 1024
 _API_VERSION = 1
 
@@ -98,6 +100,7 @@ class ExternalTriggerServer:
         recheck_callback: RecheckCallback = queue_due_rechecks,
         review_queue_callback: ReviewQueueCallback = review_queue_get,
         review_lookup_callback: ReviewLookupCallback = _lookup_review,
+        decision_callback: DecisionCallback = apply_review_decision,
     ) -> None:
         self.options = options
         self._queue_callback = queue_callback
@@ -105,6 +108,7 @@ class ExternalTriggerServer:
         self._recheck_callback = recheck_callback
         self._review_queue_callback = review_queue_callback
         self._review_lookup_callback = review_lookup_callback
+        self._decision_callback = decision_callback
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -164,6 +168,7 @@ class ExternalTriggerServer:
         recheck_callback = self._recheck_callback
         review_queue_callback = self._review_queue_callback
         review_lookup_callback = self._review_lookup_callback
+        decision_callback = self._decision_callback
         max_domains = max(1, int(self.options.max_domains_per_request))
 
         class Handler(BaseHTTPRequestHandler):
@@ -273,6 +278,7 @@ class ExternalTriggerServer:
                                 "queue_rechecks",
                                 "cancel_jobs",
                                 "review_pwa",
+                                "review_decisions",
                             ],
                         },
                     )
@@ -313,6 +319,50 @@ class ExternalTriggerServer:
                     return
                 parsed = urlsplit(self.path)
                 path = parsed.path
+                decision_prefix = "/v1/reviews/"
+                decision_suffix = "/decision"
+                if path.startswith(decision_prefix) and path.endswith(decision_suffix):
+                    encoded_domain = path[len(decision_prefix) : -len(decision_suffix)]
+                    domain = unquote(encoded_domain).strip().lower().rstrip(".")
+                    if not domain or "/" in domain:
+                        self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid_domain"})
+                        return
+                    payload = self._read_json()
+                    if payload is None:
+                        return
+                    decision = str(payload.get("decision") or "").strip().lower()
+                    raw_postpone = payload.get("postpone_until")
+                    postpone_until: int | None = None
+                    if raw_postpone is not None:
+                        try:
+                            postpone_until = int(raw_postpone)
+                        except (TypeError, ValueError):
+                            self._send_json(
+                                HTTPStatus.BAD_REQUEST,
+                                {"error": "invalid_postpone_until"},
+                            )
+                            return
+                    try:
+                        result = decision_callback(
+                            domain,
+                            decision,
+                            postpone_until=postpone_until,
+                        )
+                    except ValueError as exc:
+                        self._send_json(
+                            HTTPStatus.BAD_REQUEST,
+                            {"error": "invalid_decision", "message": str(exc)},
+                        )
+                        return
+                    except RuntimeError as exc:
+                        self._send_json(
+                            HTTPStatus.CONFLICT,
+                            {"error": "decision_conflict", "message": str(exc)},
+                        )
+                        return
+                    self._send_json(HTTPStatus.OK, {"result": result})
+                    return
+
                 if path == "/v1/review":
                     payload = self._read_json()
                     if payload is None:

@@ -39,7 +39,7 @@ async function api(path, options = {}) {
     payload = {};
   }
   if (!response.ok) {
-    const error = new Error(payload.error || `HTTP ${response.status}`);
+    const error = new Error(payload.message || payload.error || `HTTP ${response.status}`);
     error.status = response.status;
     throw error;
   }
@@ -187,13 +187,86 @@ function detailRows(item) {
   return list;
 }
 
+function decisionButton(label, decision, domain, options = {}) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = label;
+  if (options.secondary) button.className = "secondary";
+  button.addEventListener("click", async () => {
+    if (options.confirm && !window.confirm(options.confirm)) return;
+    await submitDecision(domain, decision, options.postponeSeconds || 0);
+  });
+  return button;
+}
+
+function decisionControls(domain) {
+  const container = document.createElement("div");
+  container.className = "detail-actions";
+
+  container.append(
+    decisionButton("Allow", "allow", domain),
+    decisionButton("Deny", "deny", domain),
+    decisionButton("Ignore", "ignore", domain, { secondary: true }),
+  );
+
+  const postpone = document.createElement("select");
+  postpone.setAttribute("aria-label", "Postpone duration");
+  for (const [label, seconds] of [["1 hour", 3600], ["1 day", 86400], ["7 days", 604800]]) {
+    const option = document.createElement("option");
+    option.value = String(seconds);
+    option.textContent = label;
+    if (seconds === 86400) option.selected = true;
+    postpone.append(option);
+  }
+  const postponeButton = document.createElement("button");
+  postponeButton.type = "button";
+  postponeButton.className = "secondary";
+  postponeButton.textContent = "Postpone";
+  postponeButton.addEventListener("click", async () => {
+    await submitDecision(domain, "postpone", Number(postpone.value));
+  });
+  container.append(postpone, postponeButton);
+
+  container.append(
+    decisionButton("Never ask again", "never_ask", domain, {
+      secondary: true,
+      confirm: `Never ask again about ${domain}? This can be reversed in stored preferences later.`,
+    }),
+  );
+  return container;
+}
+
+async function submitDecision(domain, decision, postponeSeconds = 0) {
+  const body = { decision };
+  if (decision === "postpone") {
+    body.postpone_until = Math.floor(Date.now() / 1000) + Math.max(60, postponeSeconds);
+  }
+  detailBody.dataset.busy = "true";
+  try {
+    await api(`/v1/reviews/${encodeURIComponent(domain)}/decision`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    detailDialog.close();
+    await loadReviews();
+  } catch (error) {
+    const message = document.createElement("p");
+    message.className = "error";
+    message.textContent = `Decision failed: ${error.message}`;
+    detailBody.prepend(message);
+  } finally {
+    delete detailBody.dataset.busy;
+  }
+}
+
 async function openDetails(domain) {
   detailDomain.textContent = domain;
   detailBody.textContent = "Loading…";
   detailDialog.showModal();
   try {
     const payload = await api(`/v1/reviews/${encodeURIComponent(domain)}`);
-    detailBody.replaceChildren(detailRows(payload.item || {}));
+    const item = payload.item || {};
+    detailBody.replaceChildren(detailRows(item), decisionControls(domain));
   } catch (error) {
     detailBody.textContent = `Could not load details: ${error.message}`;
   }
