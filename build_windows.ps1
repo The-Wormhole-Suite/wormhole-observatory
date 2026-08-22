@@ -4,10 +4,8 @@ Set-Location $PSScriptRoot
 $PipVersion = "26.2.1"
 $ReleaseDir = if ($env:PIHOLE_MANAGER_RELEASE_DIR) { $env:PIHOLE_MANAGER_RELEASE_DIR } else { "release" }
 
-if (-not (Test-Path ".venv")) {
-    py -3.11 -m venv .venv
-}
-
+Remove-Item -Recurse -Force ".venv" -ErrorAction SilentlyContinue
+python -m venv .venv
 $Python = Join-Path $PSScriptRoot ".venv\Scripts\python.exe"
 if (-not $env:PYTHONHASHSEED) {
     $env:PYTHONHASHSEED = "1"
