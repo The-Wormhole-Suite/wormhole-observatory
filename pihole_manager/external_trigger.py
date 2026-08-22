@@ -10,10 +10,11 @@ from dataclasses import asdict, is_dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from pihole_manager.config import ExternalTriggerOptions, load_options
-from pihole_manager.database import queue_domains_for_review, queue_due_rechecks
+from pihole_manager.database import queue_domains_for_review, queue_due_rechecks, review_queue_get
+from pihole_manager.manual_tag_overrides import domain_browser_search
 from pihole_manager.workers import cancel_classifier_jobs
 
 log = logging.getLogger(__name__)
@@ -21,7 +22,58 @@ log = logging.getLogger(__name__)
 QueueCallback = Callable[..., Any]
 CancelCallback = Callable[..., int]
 RecheckCallback = Callable[..., int]
+ReviewQueueCallback = Callable[..., list[dict[str, Any]]]
+ReviewLookupCallback = Callable[[str], dict[str, Any] | None]
 _MAX_BODY_BYTES = 64 * 1024
+_API_VERSION = 1
+
+_REVIEW_API_FIELDS = (
+    "domain",
+    "tags",
+    "categories",
+    "policy",
+    "short",
+    "details",
+    "provider",
+    "status",
+    "service",
+    "service_role",
+    "privacy_risk",
+    "security_risk",
+    "breakage_risk",
+    "confidence",
+    "needs_review",
+    "review_reason",
+    "planned_action",
+    "action_status",
+    "locked",
+    "queue_source",
+    "queue_state",
+    "queue_error",
+    "queue_priority",
+    "queue_created_at",
+    "updated_at",
+)
+
+
+def _serialize_review(row: dict[str, Any]) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    for field in _REVIEW_API_FIELDS:
+        if field in row:
+            payload[field] = row[field]
+    if "tags" not in payload and "categories" in payload:
+        payload["tags"] = list(payload.get("categories") or [])
+    payload.pop("categories", None)
+    return payload
+
+
+def _lookup_review(domain: str) -> dict[str, Any] | None:
+    rows, _total = domain_browser_search(search=domain, limit=25, offset=0)
+    normalized = domain.strip().lower().rstrip(".")
+    return next(
+        (row for row in rows if str(row.get("domain") or "").lower().rstrip(".") == normalized),
+        None,
+    )
 
 
 def _is_loopback_host(host: str) -> bool:
@@ -42,11 +94,15 @@ class ExternalTriggerServer:
         queue_callback: QueueCallback = queue_domains_for_review,
         cancel_callback: CancelCallback = cancel_classifier_jobs,
         recheck_callback: RecheckCallback = queue_due_rechecks,
+        review_queue_callback: ReviewQueueCallback = review_queue_get,
+        review_lookup_callback: ReviewLookupCallback = _lookup_review,
     ) -> None:
         self.options = options
         self._queue_callback = queue_callback
         self._cancel_callback = cancel_callback
         self._recheck_callback = recheck_callback
+        self._review_queue_callback = review_queue_callback
+        self._review_lookup_callback = review_lookup_callback
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -104,10 +160,12 @@ class ExternalTriggerServer:
         queue_callback = self._queue_callback
         cancel_callback = self._cancel_callback
         recheck_callback = self._recheck_callback
+        review_queue_callback = self._review_queue_callback
+        review_lookup_callback = self._review_lookup_callback
         max_domains = max(1, int(self.options.max_domains_per_request))
 
         class Handler(BaseHTTPRequestHandler):
-            server_version = "WormholeObservatoryTrigger/1"
+            server_version = "WormholeObservatoryAPI/1"
 
             def setup(self) -> None:
                 super().setup()
@@ -163,11 +221,59 @@ class ExternalTriggerServer:
             def do_GET(self) -> None:  # noqa: N802
                 if not self._require_auth():
                     return
-                path = urlsplit(self.path).path
-                if path != "/health":
-                    self._send_json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
+                parsed = urlsplit(self.path)
+                path = parsed.path
+                if path == "/health":
+                    self._send_json(HTTPStatus.OK, {"status": "ok"})
                     return
-                self._send_json(HTTPStatus.OK, {"status": "ok"})
+
+                if path == "/v1/status":
+                    self._send_json(
+                        HTTPStatus.OK,
+                        {
+                            "status": "ok",
+                            "api_version": _API_VERSION,
+                            "service": "wormhole-observatory",
+                            "capabilities": [
+                                "review_queue",
+                                "review_lookup",
+                                "queue_review",
+                                "queue_rechecks",
+                                "cancel_jobs",
+                            ],
+                        },
+                    )
+                    return
+
+                if path == "/v1/reviews":
+                    query = parse_qs(parsed.query)
+                    try:
+                        requested = int(query.get("limit", ["200"])[0])
+                    except ValueError:
+                        requested = 200
+                    limit = min(max_domains, max(1, requested))
+                    rows = review_queue_callback(limit=limit)
+                    items = [_serialize_review(row) for row in rows[:limit]]
+                    self._send_json(
+                        HTTPStatus.OK,
+                        {"items": items, "count": len(items), "limit": limit},
+                    )
+                    return
+
+                prefix = "/v1/reviews/"
+                if path.startswith(prefix):
+                    domain = unquote(path[len(prefix) :]).strip().lower().rstrip(".")
+                    if not domain or "/" in domain:
+                        self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid_domain"})
+                        return
+                    row = review_lookup_callback(domain)
+                    if row is None:
+                        self._send_json(HTTPStatus.NOT_FOUND, {"error": "review_not_found"})
+                        return
+                    self._send_json(HTTPStatus.OK, {"item": _serialize_review(row)})
+                    return
+
+                self._send_json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
 
             def do_POST(self) -> None:  # noqa: N802
                 if not self._require_auth():
