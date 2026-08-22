@@ -57,6 +57,105 @@ def test_trigger_requires_bearer_authentication() -> None:
         server.stop()
 
 
+def test_status_endpoint_exposes_versioned_capabilities() -> None:
+    server = ExternalTriggerServer(
+        ExternalTriggerOptions(enabled=True, port=0, token="secret-token")
+    )
+    server.start()
+    try:
+        status, payload = _request(server, "GET", "/v1/status", token="secret-token")
+        assert status == 200
+        assert payload["api_version"] == 1
+        assert payload["service"] == "wormhole-observatory"
+        assert "review_queue" in payload["capabilities"]
+        assert "review_lookup" in payload["capabilities"]
+    finally:
+        server.stop()
+
+
+def test_review_queue_endpoint_is_bounded_and_serialized() -> None:
+    calls: list[int] = []
+
+    def queue_rows(*, limit):
+        calls.append(limit)
+        return [
+            {
+                "domain": "tracker.example",
+                "categories": ["tracking"],
+                "policy": "deny",
+                "short": "Tracker",
+                "needs_review": True,
+                "queue_state": "queued",
+                "internal_only": "must-not-leak",
+            }
+        ]
+
+    server = ExternalTriggerServer(
+        ExternalTriggerOptions(
+            enabled=True,
+            port=0,
+            token="secret-token",
+            max_domains_per_request=50,
+        ),
+        review_queue_callback=queue_rows,
+    )
+    server.start()
+    try:
+        status, payload = _request(
+            server,
+            "GET",
+            "/v1/reviews?limit=500",
+            token="secret-token",
+        )
+        assert status == 200
+        assert calls == [50]
+        assert payload["limit"] == 50
+        assert payload["count"] == 1
+        assert payload["items"][0]["domain"] == "tracker.example"
+        assert payload["items"][0]["tags"] == ["tracking"]
+        assert "categories" not in payload["items"][0]
+        assert "internal_only" not in payload["items"][0]
+    finally:
+        server.stop()
+
+
+def test_review_lookup_endpoint_normalizes_domain_and_handles_missing() -> None:
+    calls: list[str] = []
+
+    def lookup(domain: str):
+        calls.append(domain)
+        if domain == "api.example":
+            return {"domain": domain, "tags": ["service"], "needs_review": True}
+        return None
+
+    server = ExternalTriggerServer(
+        ExternalTriggerOptions(enabled=True, port=0, token="secret-token"),
+        review_lookup_callback=lookup,
+    )
+    server.start()
+    try:
+        status, payload = _request(
+            server,
+            "GET",
+            "/v1/reviews/API.EXAMPLE.",
+            token="secret-token",
+        )
+        assert status == 200
+        assert payload["item"]["domain"] == "api.example"
+        assert calls == ["api.example"]
+
+        status, payload = _request(
+            server,
+            "GET",
+            "/v1/reviews/missing.example",
+            token="secret-token",
+        )
+        assert status == 404
+        assert payload["error"] == "review_not_found"
+    finally:
+        server.stop()
+
+
 def test_review_endpoint_queues_normalized_domains() -> None:
     calls: list[tuple[list[str], str]] = []
 
