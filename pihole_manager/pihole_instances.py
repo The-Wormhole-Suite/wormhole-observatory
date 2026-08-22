@@ -159,11 +159,26 @@ def _read_registry(active_options: PiHoleOptions) -> tuple[PiHoleInstanceRegistr
         active_instance_id=active_id,
         instances=instances,
     )
-    active = registry.active()
-    active.base_url = str(active_options.base_url or active.base_url).strip()
-    active.password = str(active_options.password or active.password)
-    active.verify_tls = bool(active_options.verify_tls)
-    active.timeout_sec = max(1.0, float(active_options.timeout_sec))
+    active_url = str(active_options.base_url or "").strip()
+    matching_active = next(
+        (
+            item
+            for item in instances
+            if item.base_url == active_url
+            and item.verify_tls == bool(active_options.verify_tls)
+            and item.timeout_sec == max(1.0, float(active_options.timeout_sec))
+        ),
+        None,
+    )
+    if matching_active is not None:
+        registry.active_instance_id = matching_active.instance_id
+        matching_active.password = str(active_options.password or matching_active.password)
+    elif len(instances) == 1:
+        active = registry.active()
+        active.base_url = active_url or active.base_url
+        active.password = str(active_options.password or active.password)
+        active.verify_tls = bool(active_options.verify_tls)
+        active.timeout_sec = max(1.0, float(active_options.timeout_sec))
     return registry, schema_version != REGISTRY_SCHEMA_VERSION
 
 
