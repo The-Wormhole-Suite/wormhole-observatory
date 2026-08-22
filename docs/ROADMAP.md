@@ -41,7 +41,7 @@
 
 - [x] authenticated local HTTP API
 - [x] responsive web UI and PWA
-- ntfy and UnifiedPush notifications with deep links
+- [x] ntfy and UnifiedPush notifications with deep links
 - allow, deny, postpone, ignore, and never-ask-again decisions
 - LAN and Tailscale access without a required public cloud
 

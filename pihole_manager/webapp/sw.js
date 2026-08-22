@@ -1,8 +1,9 @@
-const CACHE_NAME = "wormhole-review-shell-v1";
+const CACHE_NAME = "wormhole-review-shell-v2";
 const APP_SHELL = [
   "/app/",
   "/app/app.css",
   "/app/app.js",
+  "/app/deep-link.js",
   "/app/icon.svg",
   "/manifest.webmanifest",
 ];
