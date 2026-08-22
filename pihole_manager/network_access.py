@@ -95,11 +95,9 @@ def client_access_allowed(address: str, mode: str) -> bool:
         ip in network for network in _LAN_NETWORKS
     ):
         return True
-    if normalized_mode in {"tailscale", "lan_tailscale"} and any(
+    return normalized_mode in {"tailscale", "lan_tailscale"} and any(
         ip in network for network in _TAILSCALE_NETWORKS
-    ):
-        return True
-    return False
+    )
 
 
 class ScopedExternalTriggerServer(ExternalTriggerServer):
