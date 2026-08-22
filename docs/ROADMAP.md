@@ -34,7 +34,7 @@
 - [x] regex and subscribed-list views
 - [x] conflict detection across exact rules, regex rules, groups, and locks
 - [x] list audit jobs with configurable batches and rate limits
-- multiple Pi-hole instances
+- [x] multiple Pi-hole instances
 - audit log and one-click rollback
 
 ## Priority 5: Review clients
