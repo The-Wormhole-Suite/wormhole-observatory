@@ -2,17 +2,21 @@ from __future__ import annotations
 
 import json
 import logging
+import sqlite3
+import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from pihole_manager.config import database_path, load_options
-from pihole_manager.database_core import _DB_LOCK, _connection
+from pihole_manager.config import app_directory, load_options
 from pihole_manager.pihole_instances import registry_path
 
 _LOG = logging.getLogger(__name__)
 _SUPPORTED_KINDS = {"exact_domain", "regex_domain", "subscribed_list"}
+_AUDIT_DB_LOCK = threading.RLock()
+AUDIT_SCHEMA_VERSION = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,6 +36,87 @@ class PiHoleAuditEntry:
     rolled_back_at: int | None
     rollback_error: str
     created_at: int
+
+
+def audit_database_path() -> Path:
+    return app_directory() / "pihole_audit.sqlite3"
+
+
+@contextmanager
+def _audit_connection():
+    path = audit_database_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(path, timeout=30)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+    connection.execute("PRAGMA journal_mode = WAL")
+    connection.execute("PRAGMA busy_timeout = 30000")
+    try:
+        yield connection
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def _init_audit_db() -> None:
+    with _AUDIT_DB_LOCK, _audit_connection() as connection:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS schema_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+            """
+        )
+        row = connection.execute(
+            "SELECT value FROM schema_meta WHERE key = 'schema_version'"
+        ).fetchone()
+        try:
+            existing_version = int(row["value"]) if row else 0
+        except (TypeError, ValueError):
+            existing_version = 0
+        if existing_version > AUDIT_SCHEMA_VERSION:
+            raise RuntimeError(
+                "The Pi-hole audit database was created by a newer application version "
+                f"(schema {existing_version}; supported up to {AUDIT_SCHEMA_VERSION})."
+            )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS pihole_audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                instance_id TEXT NOT NULL DEFAULT '',
+                instance_name TEXT NOT NULL DEFAULT '',
+                instance_url TEXT NOT NULL DEFAULT '',
+                operation TEXT NOT NULL,
+                resource_kind TEXT NOT NULL,
+                resource_type TEXT NOT NULL DEFAULT '',
+                resource_key TEXT NOT NULL,
+                before_json TEXT NOT NULL DEFAULT 'null',
+                after_json TEXT NOT NULL DEFAULT 'null',
+                reversible INTEGER NOT NULL DEFAULT 1,
+                related_entry_id INTEGER REFERENCES pihole_audit_log(id) ON DELETE SET NULL,
+                rolled_back_at INTEGER,
+                rollback_error TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_pihole_audit_created
+            ON pihole_audit_log(created_at DESC, id DESC)
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO schema_meta(key, value) VALUES ('schema_version', ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            (str(AUDIT_SCHEMA_VERSION),),
+        )
 
 
 def _normalize_groups(groups: Any) -> list[int]:
@@ -133,7 +218,7 @@ def record_pihole_change(
     reversible: bool | None = None,
     related_entry_id: int | None = None,
 ) -> int | None:
-    if resource_kind not in _SUPPORTED_KINDS or not database_path().exists():
+    if resource_kind not in _SUPPORTED_KINDS:
         return None
     before = normalize_snapshot(resource_kind, resource_type, resource_key, before)
     after = normalize_snapshot(resource_kind, resource_type, resource_key, after)
@@ -143,7 +228,8 @@ def record_pihole_change(
         )
     instance_id, instance_name, instance_url = _instance_context()
     try:
-        with _DB_LOCK, _connection() as connection:
+        _init_audit_db()
+        with _AUDIT_DB_LOCK, _audit_connection() as connection:
             cursor = connection.execute(
                 """
                 INSERT INTO pihole_audit_log(
@@ -174,9 +260,8 @@ def record_pihole_change(
 
 
 def list_pihole_audit(limit: int = 300) -> list[PiHoleAuditEntry]:
-    if not database_path().exists():
-        return []
-    with _DB_LOCK, _connection() as connection:
+    _init_audit_db()
+    with _AUDIT_DB_LOCK, _audit_connection() as connection:
         rows = connection.execute(
             "SELECT * FROM pihole_audit_log ORDER BY created_at DESC, id DESC LIMIT ?",
             (max(1, min(5000, int(limit))),),
@@ -185,9 +270,8 @@ def list_pihole_audit(limit: int = 300) -> list[PiHoleAuditEntry]:
 
 
 def get_pihole_audit_entry(entry_id: int) -> PiHoleAuditEntry | None:
-    if not database_path().exists():
-        return None
-    with _DB_LOCK, _connection() as connection:
+    _init_audit_db()
+    with _AUDIT_DB_LOCK, _audit_connection() as connection:
         row = connection.execute(
             "SELECT * FROM pihole_audit_log WHERE id = ?",
             (int(entry_id),),
@@ -298,7 +382,8 @@ def _apply_rollback(entry: PiHoleAuditEntry) -> None:
 
 
 def _mark_rollback_error(entry_id: int, error: str) -> None:
-    with _DB_LOCK, _connection() as connection:
+    _init_audit_db()
+    with _AUDIT_DB_LOCK, _audit_connection() as connection:
         connection.execute(
             "UPDATE pihole_audit_log SET rollback_error = ? WHERE id = ?",
             (error[:2000], int(entry_id)),
@@ -339,7 +424,7 @@ def rollback_pihole_audit(entry_id: int) -> int:
         _mark_rollback_error(entry.id, str(exc))
         raise
     now = int(time.time())
-    with _DB_LOCK, _connection() as connection:
+    with _AUDIT_DB_LOCK, _audit_connection() as connection:
         connection.execute(
             """
             UPDATE pihole_audit_log
