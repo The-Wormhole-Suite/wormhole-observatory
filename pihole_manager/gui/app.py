@@ -13,7 +13,7 @@ from pihole_manager.external_trigger import configure_external_trigger, stop_ext
 from pihole_manager.gui.tabs.domains import DomainsTab
 from pihole_manager.gui.tabs.history import HistoryTab
 from pihole_manager.gui.tabs.lists import ListsTab
-from pihole_manager.gui.tabs.llm_review import LLMReviewTab
+from pihole_manager.gui.tabs.llm_review_decisions import ReviewDecisionTab
 from pihole_manager.gui.tabs.pihole_audit import PiHoleAuditTab
 from pihole_manager.gui.tabs.pihole_rules import PiHoleRulesTab
 from pihole_manager.gui.tabs.queries import QueriesTab
@@ -77,7 +77,7 @@ class App(tk.Tk):
             notebook, self.executor, on_rollback=self._pihole_rollback_completed
         )
         self.domains_tab = DomainsTab(notebook, self.executor)
-        self.llm_tab = LLMReviewTab(notebook, self.executor)
+        self.llm_tab = ReviewDecisionTab(notebook, self.executor)
         self.settings_tab = SettingsTab(notebook, self.executor, self._settings_saved)
 
         notebook.add(self.queries_tab, text="Live Queries")
