@@ -1,19 +1,25 @@
-const targetDomain = new URLSearchParams(window.location.search).get("domain")?.trim().toLowerCase();
+const targetDomain = new URLSearchParams(window.location.search)
+  .get("domain")
+  ?.trim()
+  .toLowerCase()
+  .replace(/\.$/, "");
 
 if (targetDomain) {
-  const reviewGrid = document.querySelector("#reviews");
-  const observer = new MutationObserver(() => {
-    const cards = [...reviewGrid.querySelectorAll(".review-card")];
-    const match = cards.find((card) => {
-      const title = card.querySelector("h3")?.textContent?.trim().toLowerCase();
-      return title === targetDomain;
-    });
-    if (!match) return;
-    observer.disconnect();
-    match.click();
+  const reviewPanel = document.querySelector("#reviewPanel");
+
+  const openTarget = () => {
+    if (reviewPanel.hidden || typeof window.openDetails !== "function") return false;
+    window.openDetails(targetDomain);
     const clean = new URL(window.location.href);
     clean.searchParams.delete("domain");
     history.replaceState({}, "", `${clean.pathname}${clean.search}${clean.hash}`);
-  });
-  observer.observe(reviewGrid, { childList: true });
+    return true;
+  };
+
+  if (!openTarget()) {
+    const observer = new MutationObserver(() => {
+      if (openTarget()) observer.disconnect();
+    });
+    observer.observe(reviewPanel, { attributes: true, attributeFilter: ["hidden"] });
+  }
 }

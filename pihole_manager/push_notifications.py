@@ -10,12 +10,12 @@ import threading
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import requests
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
-from pywebpush import WebPushException, webpush
+from pywebpush import webpush
 
 from pihole_manager.config import options_path
 from pihole_manager.credentials import (
@@ -203,20 +203,23 @@ def send_ntfy(
     parsed = urlsplit(base_url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError("ntfy base URL must be an absolute HTTP(S) URL")
-    headers = {
-        "Title": title,
-        "Tags": "wormhole,review",
-        "Cache": "no",
-    }
-    link = build_review_link(options.review_base_url, domain)
-    if link:
-        headers["Click"] = link
+    headers: dict[str, str] = {}
     token = options.ntfy_token.strip()
     if token:
         headers["Authorization"] = f"Bearer {token}"
+    payload: dict[str, Any] = {
+        "topic": topic,
+        "title": title,
+        "message": message,
+        "tags": ["wormhole", "review"],
+        "cache": False,
+    }
+    link = build_review_link(options.review_base_url, domain)
+    if link:
+        payload["click"] = link
     response = requests.post(
-        f"{base_url}/{quote(topic, safe='')}",
-        data=message.encode("utf-8"),
+        f"{base_url}/",
+        json=payload,
         headers=headers,
         timeout=max(1.0, float(options.timeout_sec)),
     )
@@ -257,20 +260,17 @@ def send_unifiedpush(
     )
     if len(payload.encode("utf-8")) > 3500:
         raise ValueError("UnifiedPush payload is too large")
-    try:
-        webpush(
-            subscription_info={
-                "endpoint": endpoint,
-                "keys": {"p256dh": p256dh, "auth": auth},
-            },
-            data=payload,
-            vapid_private_key=private_key,
-            vapid_claims={"sub": subject},
-            content_encoding="aes128gcm",
-            timeout=max(1.0, float(options.timeout_sec)),
-        )
-    except WebPushException:
-        raise
+    webpush(
+        subscription_info={
+            "endpoint": endpoint,
+            "keys": {"p256dh": p256dh, "auth": auth},
+        },
+        data=payload,
+        vapid_private_key=private_key,
+        vapid_claims={"sub": subject},
+        content_encoding="aes128gcm",
+        timeout=max(1.0, float(options.timeout_sec)),
+    )
 
 
 def send_push_notifications(

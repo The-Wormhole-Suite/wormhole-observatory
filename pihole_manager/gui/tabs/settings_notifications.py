@@ -201,6 +201,13 @@ class NotificationsSettingsPage(ttk.Frame):
         except ValueError as exc:
             messagebox.showerror("Notifications", str(exc), parent=self)
             return False
+        if (push.ntfy_enabled or push.unifiedpush_enabled) and not push.review_base_url:
+            messagebox.showerror(
+                "Notifications",
+                "Push notifications require a Review app base URL for deep links.",
+                parent=self,
+            )
+            return False
         if push.ntfy_enabled and (not push.ntfy_base_url or not push.ntfy_topic):
             messagebox.showerror(
                 "Notifications",
@@ -209,7 +216,9 @@ class NotificationsSettingsPage(ttk.Frame):
             )
             return False
         if push.unifiedpush_enabled and (
-            not push.unifiedpush_endpoint or not push.unifiedpush_p256dh or not push.unifiedpush_auth
+            not push.unifiedpush_endpoint
+            or not push.unifiedpush_p256dh
+            or not push.unifiedpush_auth
         ):
             messagebox.showerror(
                 "Notifications",
