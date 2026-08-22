@@ -108,9 +108,11 @@ def _hydrate_password(instance: PiHoleInstance) -> bool:
     if state is CredentialReadState.PRESENT:
         instance.password = stored
         return bool(plaintext)
-    if state is CredentialReadState.MISSING and plaintext and _write_secret(key, plaintext):
-        return True
-    return False
+    return bool(
+        state is CredentialReadState.MISSING
+        and plaintext
+        and _write_secret(key, plaintext)
+    )
 
 
 def _read_registry(active_options: PiHoleOptions) -> tuple[PiHoleInstanceRegistry, bool]:
