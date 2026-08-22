@@ -145,12 +145,15 @@ def run_list_audit_cycle(
                     lists_seen, lists_audited, lists_failed, domains_seen, domains_queued,
                     batches, truncated, True
                 )
-            if not first_batch and audit.rate_limit_sec > 0:
-                if pause(float(audit.rate_limit_sec)):
-                    return ListAuditSummary(
-                        lists_seen, lists_audited, lists_failed, domains_seen, domains_queued,
-                        batches, truncated, True
-                    )
+            if (
+                not first_batch
+                and audit.rate_limit_sec > 0
+                and pause(float(audit.rate_limit_sec))
+            ):
+                return ListAuditSummary(
+                    lists_seen, lists_audited, lists_failed, domains_seen, domains_queued,
+                    batches, truncated, True
+                )
             batch = list(eligible_domains[index : index + batch_size])
             domains_queued += enqueue(
                 batch,
