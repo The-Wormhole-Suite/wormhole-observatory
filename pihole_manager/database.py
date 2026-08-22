@@ -80,8 +80,6 @@ def _with_saved_evidence_citations(classification: Classification) -> Classifica
         limit=12,
     )
     if not findings:
-        # Keep legacy/manual classification writes unchanged when no evidence
-        # was collected. Normal analysis runs collect evidence before LLM use.
         return classification
     return attach_evidence_citations(
         [classification],
@@ -139,12 +137,14 @@ def review_get(
 
 def review_queue_get(limit: int = 2_000) -> list[dict[str, Any]]:
     rows = _database_review.review_queue_get(limit=limit)
-    return _review_preferences.apply_review_preferences(rows, hide_blocked=True)[: max(1, int(limit))]
+    filtered = _review_preferences.apply_review_preferences(rows, hide_blocked=True)
+    return filtered[: max(1, int(limit))]
 
 
 def review_queue_items(limit: int = 500) -> list[dict[str, Any]]:
     rows = _manual_tag_overrides.review_queue_items(limit=limit)
-    return _review_preferences.apply_review_preferences(rows, hide_blocked=True)[: max(1, int(limit))]
+    filtered = _review_preferences.apply_review_preferences(rows, hide_blocked=True)
+    return filtered[: max(1, int(limit))]
 
 
 def create_review_task(
