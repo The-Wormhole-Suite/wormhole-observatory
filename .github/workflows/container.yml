@@ -1,0 +1,142 @@
+name: Container
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/container.yml"
+      - ".dockerignore"
+      - "Dockerfile"
+      - "compose.yaml"
+      - "pyproject.toml"
+      - "pihole_manager/**"
+      - "pihole6api/**"
+  push:
+    branches: [dev]
+    tags: ["v*"]
+
+env:
+  IMAGE_NAME: ghcr.io/the-wormhole-suite/wormhole-observatory
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Build native smoke image
+        run: docker build --tag wormhole-observatory:smoke .
+
+      - name: Smoke-test headless service and persistent volume
+        shell: bash
+        run: |
+          set -euo pipefail
+          volume="wormhole-smoke-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          container="wormhole-smoke-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cleanup() {
+            docker logs "$container" 2>/dev/null || true
+            docker rm -f "$container" 2>/dev/null || true
+            docker volume rm "$volume" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          docker volume create "$volume" >/dev/null
+          docker run -d --name "$container" \
+            -e WORMHOLE_API_TOKEN=container-smoke-token \
+            -e WORMHOLE_ACCESS_MODE=any \
+            -p 18765:8765 \
+            -v "$volume:/data" \
+            wormhole-observatory:smoke >/dev/null
+          for _ in $(seq 1 30); do
+            if curl -fsS \
+              -H 'Authorization: Bearer container-smoke-token' \
+              http://127.0.0.1:18765/health >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          curl -fsS \
+            -H 'Authorization: Bearer container-smoke-token' \
+            http://127.0.0.1:18765/health >/dev/null
+          curl -fsS http://127.0.0.1:18765/app/ | grep -q 'Wormhole Observatory'
+          docker rm -f "$container" >/dev/null
+          docker run --rm \
+            --entrypoint python \
+            -v "$volume:/data" \
+            wormhole-observatory:smoke \
+            -c "from pathlib import Path; assert Path('/data/pihole_manager.sqlite3').is_file(); assert Path('/data/options.json').is_file()"
+          docker run -d --name "$container" \
+            -e WORMHOLE_API_TOKEN=container-smoke-token \
+            -e WORMHOLE_ACCESS_MODE=any \
+            -p 18765:8765 \
+            -v "$volume:/data" \
+            wormhole-observatory:smoke >/dev/null
+          for _ in $(seq 1 30); do
+            if curl -fsS \
+              -H 'Authorization: Bearer container-smoke-token' \
+              http://127.0.0.1:18765/health >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          exit 1
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+      - name: Verify multi-architecture build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: false
+          provenance: false
+          sbom: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  publish:
+    if: github.event_name == 'push'
+    needs: verify
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') }}
+            type=raw,value=dev,enable=${{ github.ref == 'refs/heads/dev' }}
+            type=sha,format=long
+      - name: Build and publish multi-architecture image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

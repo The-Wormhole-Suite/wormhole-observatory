@@ -24,6 +24,7 @@ windows-build = ["pyinstaller>=6,<7"]
 
 [project.scripts]
 pihole-manager-cli = "pihole_manager.__main__:main"
+wormhole-observatory-headless = "pihole_manager.headless:main"
 
 [project.gui-scripts]
 pihole-manager = "pihole_manager.__main__:main"
