@@ -1,4 +1,4 @@
-# Reproducible Onedir build environment for CPython 3.11.16.
+# Reproducible Onedir build environment for CPython 3.11.15.
 # Update deliberately and validate with the release reproducibility workflow.
 
 # Build toolchain
