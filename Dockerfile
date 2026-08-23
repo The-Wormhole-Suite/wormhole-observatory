@@ -6,7 +6,7 @@ LABEL org.opencontainers.image.source="https://github.com/The-Wormhole-Suite/wor
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIHOLE_MANAGER_HOME=/data \
+    PIHOLE_MANAGER_HOME=/data/wormhole \
     WORMHOLE_BIND_HOST=0.0.0.0 \
     WORMHOLE_PORT=8765 \
     WORMHOLE_ACCESS_MODE=lan_tailscale
@@ -21,8 +21,8 @@ RUN python -m pip install --no-cache-dir . \
     && groupadd --system --gid 10001 wormhole \
     && useradd --system --uid 10001 --gid wormhole --home-dir /nonexistent \
         --shell /usr/sbin/nologin wormhole \
-    && mkdir -p /data \
-    && chown wormhole:wormhole /data
+    && mkdir -p /data/wormhole \
+    && chown -R wormhole:wormhole /data
 
 USER wormhole
 VOLUME ["/data"]

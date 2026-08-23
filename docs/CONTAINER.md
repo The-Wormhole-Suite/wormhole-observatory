@@ -21,18 +21,24 @@ The runtime image uses the multi-platform Python 3.11.16 slim-bookworm image pin
 
 ## Persistent data
 
-`PIHOLE_MANAGER_HOME` is fixed to `/data` in the image and `/data` is declared as the persistent
-volume. This keeps the existing application storage model intact. The volume contains, among other
-files:
+`PIHOLE_MANAGER_HOME` is fixed to `/data/wormhole` in the image and `/data` is declared as the
+persistent volume. This keeps the existing application storage model intact. The volume contains,
+among other files:
 
-- `options.json`
-- `pihole_manager.sqlite3`
+- `wormhole/options.json`
+- `wormhole/pihole_manager.sqlite3`
 - Pi-hole audit data
 - review-network access settings
 - logs and other application state that already use `app_directory()`
 
 Back up the volume before destructive configuration or database changes. Updating or replacing the
 container does not require copying state into the image.
+
+## Home Assistant compatibility
+
+Home Assistant Apps reserve `/data/options.json` for Supervisor-managed app options. Wormhole keeps
+its own application home below `/data/wormhole`, so a later Home Assistant App can use the same
+container image without its Supervisor configuration colliding with Wormhole's schema.
 
 ## Required authentication
 
@@ -67,15 +73,16 @@ provides the network boundary.
 
 ## Existing configuration
 
-On first start the application creates a default `/data/options.json`. Pi-hole, provider, scanning,
-LLM and other existing settings remain in this normal configuration file. A deployment can seed the
-volume with an existing compatible configuration before starting the container.
+On first start the application creates a default `/data/wormhole/options.json`. Pi-hole, provider,
+scanning, LLM and other existing settings remain in this normal configuration file. A deployment can
+seed the volume with an existing compatible configuration before starting the container.
 
 The container starts the same scanner, list-audit worker and realtime/background classifiers used by
 the desktop application. Disabled features remain idle because those workers reload their normal
-settings from `/data/options.json`.
+settings from `/data/wormhole/options.json`.
 
 ## Updates
 
 Container deployments are updated by pulling/replacing the image. The desktop self-updater is not
-part of the headless runtime lifecycle. Persistent state remains in `/data`.
+part of the headless runtime lifecycle. Persistent state remains in `/data/wormhole` inside the
+`/data` volume.

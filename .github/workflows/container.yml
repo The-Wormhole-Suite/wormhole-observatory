@@ -65,7 +65,7 @@ jobs:
             --entrypoint python \
             -v "$volume:/data" \
             wormhole-observatory:smoke \
-            -c "from pathlib import Path; assert Path('/data/pihole_manager.sqlite3').is_file(); assert Path('/data/options.json').is_file()"
+            -c "from pathlib import Path; assert Path('/data/wormhole/pihole_manager.sqlite3').is_file(); assert Path('/data/wormhole/options.json').is_file()"
           docker run -d --name "$container" \
             -e WORMHOLE_API_TOKEN=container-smoke-token \
             -e WORMHOLE_ACCESS_MODE=any \
