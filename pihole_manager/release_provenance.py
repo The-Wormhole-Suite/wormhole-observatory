@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
@@ -87,3 +88,17 @@ def generate(directory: Path) -> list[Path]:
     if not artifacts:
         raise RuntimeError(f"No release ZIP files found in {directory}")
     return [write_provenance(artifact) for artifact in artifacts]
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Generate portable release provenance")
+    parser.add_argument("directory", type=Path)
+    args = parser.parse_args(argv)
+    outputs = generate(args.directory)
+    for output in outputs:
+        print(output)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

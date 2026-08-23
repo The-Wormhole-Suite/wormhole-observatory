@@ -74,7 +74,7 @@ jobs:
       - name: Generate portable release provenance
         env:
           RELEASE_WORKFLOW_REF: ${{ github.workflow_ref }}
-        run: python scripts/generate_release_provenance.py release-pass1
+        run: python -m pihole_manager.release_provenance release-pass1
 
       - name: Sign and verify release archive with Sigstore
         uses: sigstore/gh-action-sigstore-python@v3.4.0
