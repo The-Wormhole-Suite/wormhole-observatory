@@ -84,6 +84,7 @@ jobs:
         run: python -m pihole_manager.release_provenance release-pass1
 
       - name: Sign and verify release archive with Sigstore
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         uses: sigstore/gh-action-sigstore-python@v3.4.0
         with:
           inputs: release-pass1/*.zip
@@ -94,6 +95,7 @@ jobs:
           release-signing-artifacts: false
 
       - name: Sign and verify release provenance with Sigstore
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         uses: sigstore/gh-action-sigstore-python@v3.4.0
         with:
           inputs: release-pass1/*.intoto.json
@@ -104,6 +106,7 @@ jobs:
           release-signing-artifacts: false
 
       - name: Publish GitHub artifact attestation
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         uses: actions/attest@v4
         with:
           subject-path: release-pass1/*.zip
