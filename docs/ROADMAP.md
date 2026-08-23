@@ -55,3 +55,4 @@
 - [x] reserve reproducible Windows/Linux PR builds for packaging and release-build changes
 - [x] keep native container smoke coverage while limiting QEMU multi-architecture PR builds to image-affecting changes
 - [x] reduce scheduled development cleanup frequency while preserving post-publish cleanup
+- [x] prevent public fork pull requests from receiving official release signatures or attestations
