@@ -95,13 +95,19 @@ jobs:
           name: ${{ matrix.platform }}-release
           path: release-pass1/*
           if-no-files-found: error
+          retention-days: 14
 
   publish:
     needs: build
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+      packages: write
     steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11.9"
       - uses: actions/download-artifact@v7
         with:
           path: release
@@ -119,3 +125,9 @@ jobs:
             --prerelease \
             --title "Development build ${short_sha}" \
             --notes "Automated reproducible, signed and attested Onedir build from dev at commit ${GITHUB_SHA}."
+      - name: Clean expired development prereleases
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          DEV_RETENTION_DAYS: "30"
+          DEV_RETENTION_KEEP: "10"
+        run: python scripts/cleanup_dev_builds.py --releases-only
