@@ -6,7 +6,7 @@ Windows and Linux Onedir artifacts are built with a controlled toolchain and are
 
 The release build uses the following controls:
 
-- CPython is pinned to `3.11.16` in GitHub Actions.
+- CPython is pinned to `3.11.15` in GitHub Actions.
 - Runtime and PyInstaller build dependencies are pinned in `requirements-build.lock`.
 - Each build uses a newly created virtual environment; an old local `.venv` cannot leak packages into a release.
 - `PYTHONHASHSEED=1` removes randomized Python hash ordering from PyInstaller's build inputs.
