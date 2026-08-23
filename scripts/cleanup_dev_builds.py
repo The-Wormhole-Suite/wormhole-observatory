@@ -6,7 +6,7 @@ import os
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from pihole_manager.dev_retention import (
@@ -68,7 +68,7 @@ def _delete_releases(api: GitHubApi, repository: str, *, dry_run: bool) -> int:
     releases = api.list_all(f"/repos/{repository}/releases")
     selected = select_dev_release_deletions(
         releases,
-        now=datetime.now(timezone.utc),
+        now=datetime.now(UTC),
         min_age_days=_positive_int("DEV_RETENTION_DAYS", 30),
         keep_latest=_positive_int("DEV_RETENTION_KEEP", 10),
     )
@@ -89,7 +89,7 @@ def _delete_packages(api: GitHubApi, owner: str, package: str, *, dry_run: bool)
     versions = api.list_all(path)
     selected = select_dev_package_version_deletions(
         versions,
-        now=datetime.now(timezone.utc),
+        now=datetime.now(UTC),
         min_age_days=_positive_int("DEV_RETENTION_DAYS", 30),
         keep_latest=_positive_int("DEV_RETENTION_KEEP", 10),
     )

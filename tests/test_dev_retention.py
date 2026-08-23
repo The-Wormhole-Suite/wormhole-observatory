@@ -1,17 +1,17 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from pihole_manager.dev_retention import (
     select_dev_package_version_deletions,
     select_dev_release_deletions,
 )
 
-_NOW = datetime(2026, 8, 23, tzinfo=timezone.utc)
+_NOW = datetime(2026, 8, 23, tzinfo=UTC)
 
 
 def _release(index: int, *, days_old: int, tag: str | None = None, prerelease: bool = True):
-    created = datetime.fromtimestamp(_NOW.timestamp() - days_old * 86400, tz=timezone.utc)
+    created = datetime.fromtimestamp(_NOW.timestamp() - days_old * 86400, tz=UTC)
     return {
         "id": index,
         "tag_name": tag or f"dev-{index}-abcdef12",
@@ -21,7 +21,7 @@ def _release(index: int, *, days_old: int, tag: str | None = None, prerelease: b
 
 
 def _version(index: int, *, days_old: int, tags: list[str]):
-    created = datetime.fromtimestamp(_NOW.timestamp() - days_old * 86400, tz=timezone.utc)
+    created = datetime.fromtimestamp(_NOW.timestamp() - days_old * 86400, tz=UTC)
     return {
         "id": index,
         "created_at": created.isoformat().replace("+00:00", "Z"),
@@ -45,7 +45,10 @@ def test_release_cleanup_protects_age_latest_and_non_dev_releases():
 
 
 def test_package_cleanup_only_targets_old_sha_only_versions():
-    versions = [_version(index, days_old=60 + index, tags=[f"sha-{index:040x}"]) for index in range(1, 13)]
+    versions = [
+        _version(index, days_old=60 + index, tags=[f"sha-{index:040x}"])
+        for index in range(1, 13)
+    ]
     versions += [
         _version(20, days_old=100, tags=["0.3.6", "latest", "sha-stable"]),
         _version(21, days_old=100, tags=[]),

@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 
 def _timestamp(value: str) -> datetime:
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def select_dev_release_deletions(
@@ -25,7 +25,7 @@ def select_dev_release_deletions(
     ]
     candidates.sort(key=lambda item: _timestamp(str(item["created_at"])), reverse=True)
     protected_ids = {int(item["id"]) for item in candidates[: max(0, keep_latest)]}
-    cutoff = now.astimezone(timezone.utc) - timedelta(days=max(0, min_age_days))
+    cutoff = now.astimezone(UTC) - timedelta(days=max(0, min_age_days))
     return [
         item
         for item in candidates
@@ -56,7 +56,7 @@ def select_dev_package_version_deletions(
             candidates.append(item)
     candidates.sort(key=lambda item: _timestamp(str(item["created_at"])), reverse=True)
     protected_ids = {int(item["id"]) for item in candidates[: max(0, keep_latest)]}
-    cutoff = now.astimezone(timezone.utc) - timedelta(days=max(0, min_age_days))
+    cutoff = now.astimezone(UTC) - timedelta(days=max(0, min_age_days))
     return [
         item
         for item in candidates
