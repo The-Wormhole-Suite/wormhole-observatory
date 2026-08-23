@@ -1,6 +1,7 @@
 name: Container
 
 on:
+  workflow_dispatch:
   pull_request:
     paths:
       - ".github/workflows/container.yml"
@@ -16,6 +17,10 @@ on:
     branches: [dev]
     tags: ["v*"]
 
+concurrency:
+  group: container-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 env:
   IMAGE_NAME: ghcr.io/the-wormhole-suite/wormhole-observatory
 
@@ -27,6 +32,23 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
+
+      - name: Determine pull-request multi-architecture scope
+        id: scope
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          files="$(gh pr diff "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --name-only)"
+          if printf '%s\n' "$files" | grep -Eq \
+            '^(\.github/workflows/container\.yml|\.dockerignore|Dockerfile|compose\.yaml|repository\.yaml|wormhole_observatory/|pyproject\.toml|pihole_manager/container_entrypoint\.py)'; then
+            echo "multiarch=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "multiarch=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Build native smoke image
         run: docker build --tag wormhole-observatory:smoke .
@@ -105,10 +127,13 @@ jobs:
             http://127.0.0.1:18765/v1/status >/dev/null
 
       - name: Set up QEMU
+        if: github.event_name == 'pull_request' && steps.scope.outputs.multiarch == 'true'
         uses: docker/setup-qemu-action@v4
       - name: Set up Docker Buildx
+        if: github.event_name == 'pull_request' && steps.scope.outputs.multiarch == 'true'
         uses: docker/setup-buildx-action@v4
       - name: Verify multi-architecture build
+        if: github.event_name == 'pull_request' && steps.scope.outputs.multiarch == 'true'
         uses: docker/build-push-action@v7
         with:
           context: .
