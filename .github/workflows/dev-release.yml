@@ -6,7 +6,9 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+  id-token: write
+  attestations: write
 
 jobs:
   build:
@@ -56,6 +58,38 @@ jobs:
 
       - name: Verify byte-for-byte reproducibility
         run: python scripts/verify_reproducible_release.py release-pass1 release-pass2
+
+      - name: Generate portable release provenance
+        env:
+          RELEASE_WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: python -m pihole_manager.release_provenance release-pass1
+
+      - name: Sign and verify release archive with Sigstore
+        uses: sigstore/gh-action-sigstore-python@v3.4.0
+        with:
+          inputs: release-pass1/*.zip
+          verify: true
+          verify-cert-identity: https://github.com/${{ github.workflow_ref }}
+          verify-oidc-issuer: https://token.actions.githubusercontent.com
+          upload-signing-artifacts: false
+          release-signing-artifacts: false
+
+      - name: Sign and verify release provenance with Sigstore
+        uses: sigstore/gh-action-sigstore-python@v3.4.0
+        with:
+          inputs: release-pass1/*.intoto.json
+          verify: true
+          verify-cert-identity: https://github.com/${{ github.workflow_ref }}
+          verify-oidc-issuer: https://token.actions.githubusercontent.com
+          upload-signing-artifacts: false
+          release-signing-artifacts: false
+
+      - name: Publish GitHub artifact attestation when available
+        if: github.event.repository.private == false
+        uses: actions/attest@v4
+        with:
+          subject-path: release-pass1/*.zip
+
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.platform }}-release
@@ -65,6 +99,8 @@ jobs:
   publish:
     needs: build
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     steps:
       - uses: actions/download-artifact@v7
         with:
@@ -82,4 +118,4 @@ jobs:
             --target "$GITHUB_SHA" \
             --prerelease \
             --title "Development build ${short_sha}" \
-            --notes "Automated reproducible Onedir build from dev at commit ${GITHUB_SHA}."
+            --notes "Automated reproducible, signed and attested Onedir build from dev at commit ${GITHUB_SHA}."
