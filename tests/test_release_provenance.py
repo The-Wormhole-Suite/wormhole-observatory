@@ -5,7 +5,8 @@ import json
 from pathlib import Path
 
 import pytest
-from scripts.generate_release_provenance import generate
+
+from pihole_manager.release_provenance import generate
 
 
 _ENV = {
