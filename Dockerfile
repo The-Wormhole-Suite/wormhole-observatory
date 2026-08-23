@@ -24,7 +24,6 @@ RUN python -m pip install --no-cache-dir . \
     && mkdir -p /data/wormhole \
     && chown -R wormhole:wormhole /data
 
-USER wormhole
 VOLUME ["/data"]
 EXPOSE 8765
 STOPSIGNAL SIGTERM
@@ -32,4 +31,4 @@ STOPSIGNAL SIGTERM
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD python -c "import os,socket; s=socket.create_connection(('127.0.0.1',int(os.environ.get('WORMHOLE_PORT','8765'))),3); s.close()"
 
-ENTRYPOINT ["python", "-m", "pihole_manager.headless"]
+ENTRYPOINT ["python", "-m", "pihole_manager.container_entrypoint"]

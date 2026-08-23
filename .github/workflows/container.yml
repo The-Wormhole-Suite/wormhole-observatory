@@ -7,6 +7,8 @@ on:
       - ".dockerignore"
       - "Dockerfile"
       - "compose.yaml"
+      - "repository.yaml"
+      - "wormhole_observatory/**"
       - "pyproject.toml"
       - "pihole_manager/**"
       - "pihole6api/**"
@@ -29,7 +31,7 @@ jobs:
       - name: Build native smoke image
         run: docker build --tag wormhole-observatory:smoke .
 
-      - name: Smoke-test headless service and persistent volume
+      - name: Smoke-test headless service, persistence, and Home Assistant bootstrap
         shell: bash
         run: |
           set -euo pipefail
@@ -40,47 +42,67 @@ jobs:
             docker rm -f "$container" 2>/dev/null || true
             docker volume rm "$volume" 2>/dev/null || true
           }
+          wait_health() {
+            local token="$1"
+            for _ in $(seq 1 30); do
+              if curl -fsS \
+                -H "Authorization: Bearer ${token}" \
+                http://127.0.0.1:18765/health >/dev/null; then
+                return 0
+              fi
+              sleep 1
+            done
+            return 1
+          }
+          assert_runtime_uid() {
+            local uid
+            uid="$(docker exec "$container" cat /proc/1/status | awk '/^Uid:/ {print $2}')"
+            test "$uid" = "10001"
+          }
           trap cleanup EXIT
           docker volume create "$volume" >/dev/null
+
           docker run -d --name "$container" \
             -e WORMHOLE_API_TOKEN=container-smoke-token \
             -e WORMHOLE_ACCESS_MODE=any \
             -p 18765:8765 \
             -v "$volume:/data" \
             wormhole-observatory:smoke >/dev/null
-          for _ in $(seq 1 30); do
-            if curl -fsS \
-              -H 'Authorization: Bearer container-smoke-token' \
-              http://127.0.0.1:18765/health >/dev/null; then
-              break
-            fi
-            sleep 1
-          done
-          curl -fsS \
-            -H 'Authorization: Bearer container-smoke-token' \
-            http://127.0.0.1:18765/health >/dev/null
+          wait_health container-smoke-token
+          assert_runtime_uid
           curl -fsS http://127.0.0.1:18765/app/ | grep -q 'Wormhole Observatory'
           docker rm -f "$container" >/dev/null
+
           docker run --rm \
             --entrypoint python \
             -v "$volume:/data" \
             wormhole-observatory:smoke \
             -c "from pathlib import Path; assert Path('/data/wormhole/pihole_manager.sqlite3').is_file(); assert Path('/data/wormhole/options.json').is_file()"
+
           docker run -d --name "$container" \
             -e WORMHOLE_API_TOKEN=container-smoke-token \
             -e WORMHOLE_ACCESS_MODE=any \
             -p 18765:8765 \
             -v "$volume:/data" \
             wormhole-observatory:smoke >/dev/null
-          for _ in $(seq 1 30); do
-            if curl -fsS \
-              -H 'Authorization: Bearer container-smoke-token' \
-              http://127.0.0.1:18765/health >/dev/null; then
-              exit 0
-            fi
-            sleep 1
-          done
-          exit 1
+          wait_health container-smoke-token
+          assert_runtime_uid
+          docker rm -f "$container" >/dev/null
+
+          docker run --rm \
+            --entrypoint python \
+            -v "$volume:/data" \
+            wormhole-observatory:smoke \
+            -c "import json,os; path='/data/options.json'; open(path,'w',encoding='utf-8').write(json.dumps({'api_token':'home-assistant-smoke-token','access_mode':'any','max_domains':37})); os.chmod(path,0o600)"
+          docker run -d --name "$container" \
+            -p 18765:8765 \
+            -v "$volume:/data" \
+            wormhole-observatory:smoke >/dev/null
+          wait_health home-assistant-smoke-token
+          assert_runtime_uid
+          curl -fsS \
+            -H 'Authorization: Bearer home-assistant-smoke-token' \
+            http://127.0.0.1:18765/v1/status >/dev/null
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
