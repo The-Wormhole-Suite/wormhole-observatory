@@ -162,3 +162,10 @@ jobs:
           sbom: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Clean expired development container versions
+        if: github.ref == 'refs/heads/dev'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          DEV_RETENTION_DAYS: "30"
+          DEV_RETENTION_KEEP: "10"
+        run: python3 scripts/cleanup_dev_builds.py --packages-only
