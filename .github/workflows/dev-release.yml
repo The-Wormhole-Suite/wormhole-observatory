@@ -27,16 +27,33 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11.16"
-      - name: Build reproducibility pass 1
+
+      - name: Windows reproducibility pass 1
+        if: matrix.platform == 'windows'
+        shell: pwsh
         env:
           PIHOLE_MANAGER_RELEASE_DIR: release-pass1
-        shell: ${{ matrix.platform == 'windows' && 'pwsh' || 'bash' }}
-        run: ${{ matrix.platform == 'windows' && './build_windows.ps1' || './build_linux.sh' }}
-      - name: Build reproducibility pass 2
+        run: ./build_windows.ps1
+      - name: Linux reproducibility pass 1
+        if: matrix.platform == 'linux'
+        shell: bash
+        env:
+          PIHOLE_MANAGER_RELEASE_DIR: release-pass1
+        run: ./build_linux.sh
+
+      - name: Windows reproducibility pass 2
+        if: matrix.platform == 'windows'
+        shell: pwsh
         env:
           PIHOLE_MANAGER_RELEASE_DIR: release-pass2
-        shell: ${{ matrix.platform == 'windows' && 'pwsh' || 'bash' }}
-        run: ${{ matrix.platform == 'windows' && './build_windows.ps1' || './build_linux.sh' }}
+        run: ./build_windows.ps1
+      - name: Linux reproducibility pass 2
+        if: matrix.platform == 'linux'
+        shell: bash
+        env:
+          PIHOLE_MANAGER_RELEASE_DIR: release-pass2
+        run: ./build_linux.sh
+
       - name: Verify byte-for-byte reproducibility
         run: python scripts/verify_reproducible_release.py release-pass1 release-pass2
       - uses: actions/upload-artifact@v7
