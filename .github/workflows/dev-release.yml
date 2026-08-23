@@ -58,6 +58,22 @@ jobs:
 
       - name: Verify byte-for-byte reproducibility
         run: python scripts/verify_reproducible_release.py release-pass1 release-pass2
+
+      - name: Sign and verify release archive with Sigstore
+        uses: sigstore/gh-action-sigstore-python@v3.4.0
+        with:
+          inputs: release-pass1/*.zip
+          verify: true
+          verify-cert-identity: https://github.com/${{ github.workflow_ref }}
+          verify-oidc-issuer: https://token.actions.githubusercontent.com
+          upload-signing-artifacts: false
+          release-signing-artifacts: false
+
+      - name: Attest release provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: release-pass1/*.zip
+
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.platform }}-release
@@ -84,4 +100,4 @@ jobs:
             --target "$GITHUB_SHA" \
             --prerelease \
             --title "Development build ${short_sha}" \
-            --notes "Automated reproducible Onedir build from dev at commit ${GITHUB_SHA}."
+            --notes "Automated reproducible, signed and attested Onedir build from dev at commit ${GITHUB_SHA}."
