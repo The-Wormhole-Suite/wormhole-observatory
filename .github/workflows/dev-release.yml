@@ -13,36 +13,58 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: windows-latest
+          - os: windows-2025
             platform: windows
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             platform: linux
     runs-on: ${{ matrix.os }}
     env:
       PIHOLE_MANAGER_BUILD_CHANNEL: prerelease
       PIHOLE_MANAGER_BUILD_ID: ${{ github.sha }}
+      PYTHONHASHSEED: "1"
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.11"
-      - name: Build Windows Onedir package
+          python-version: "3.11.9"
+
+      - name: Windows reproducibility pass 1
         if: matrix.platform == 'windows'
         shell: pwsh
+        env:
+          PIHOLE_MANAGER_RELEASE_DIR: release-pass1
         run: ./build_windows.ps1
-      - name: Build Linux Onedir package
+      - name: Linux reproducibility pass 1
         if: matrix.platform == 'linux'
         shell: bash
+        env:
+          PIHOLE_MANAGER_RELEASE_DIR: release-pass1
         run: ./build_linux.sh
+
+      - name: Windows reproducibility pass 2
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        env:
+          PIHOLE_MANAGER_RELEASE_DIR: release-pass2
+        run: ./build_windows.ps1
+      - name: Linux reproducibility pass 2
+        if: matrix.platform == 'linux'
+        shell: bash
+        env:
+          PIHOLE_MANAGER_RELEASE_DIR: release-pass2
+        run: ./build_linux.sh
+
+      - name: Verify byte-for-byte reproducibility
+        run: python scripts/verify_reproducible_release.py release-pass1 release-pass2
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.platform }}-release
-          path: release/*
+          path: release-pass1/*
           if-no-files-found: error
 
   publish:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v7
         with:
@@ -60,4 +82,4 @@ jobs:
             --target "$GITHUB_SHA" \
             --prerelease \
             --title "Development build ${short_sha}" \
-            --notes "Automated Onedir build from the dev branch at commit ${GITHUB_SHA}."
+            --notes "Automated reproducible Onedir build from dev at commit ${GITHUB_SHA}."
