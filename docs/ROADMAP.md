@@ -50,5 +50,5 @@
 - [x] reproducible Windows and Linux Onedir releases
 - [x] code-signing and release provenance (keyless Sigstore + signed in-toto/SLSA provenance)
 - [x] multi-architecture Docker images with persistent volumes
-- Home Assistant app repository based on the container image
+- [x] Home Assistant app repository based on the container image
 - release retention and cleanup policy for development builds

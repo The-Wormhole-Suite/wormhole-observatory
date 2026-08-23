@@ -37,12 +37,18 @@ container does not require copying state into the image.
 ## Home Assistant compatibility
 
 Home Assistant Apps reserve `/data/options.json` for Supervisor-managed app options. Wormhole keeps
-its own application home below `/data/wormhole`, so a later Home Assistant App can use the same
-container image without its Supervisor configuration colliding with Wormhole's schema.
+its own application home below `/data/wormhole`, so the same container image can run as a Home
+Assistant App without its Supervisor configuration colliding with Wormhole's schema.
+
+Supervisor protects `/data/options.json` as a root-owned mode-0600 file. The container therefore has
+a minimal bootstrap phase as root. It reads only recognized Supervisor options, prepares ownership
+of `/data/wormhole`, clears supplementary groups, and permanently switches to UID/GID 10001 before
+executing the long-running Wormhole process. CI checks the PID 1 runtime UID in both normal Docker
+and simulated Home Assistant startup paths.
 
 ## Required authentication
 
-The headless service refuses to start without an API token. Supply it with
+The headless service refuses to start without an API token. Normal Docker deployments supply it with
 `WORMHOLE_API_TOKEN`. The environment value is used at runtime and is not written back into
 `options.json` by the headless launcher.
 
@@ -66,6 +72,9 @@ documentation.
 | `WORMHOLE_PORT` | `8765` | HTTP/API port |
 | `WORMHOLE_ACCESS_MODE` | `lan_tailscale` | `local`, `lan`, `tailscale`, `lan_tailscale`, or `any` |
 | `WORMHOLE_MAX_DOMAINS` | existing setting | Maximum domains accepted by one review request |
+
+Explicit `WORMHOLE_*` environment variables take precedence over recognized Home Assistant options
+when both are present.
 
 The default `lan_tailscale` mode keeps the existing network-scope guard in front of the authenticated
 API. Set `any` only when the surrounding Docker host, firewall or reverse proxy intentionally
