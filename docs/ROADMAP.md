@@ -51,4 +51,4 @@
 - [x] code-signing and release provenance (keyless Sigstore + signed in-toto/SLSA provenance)
 - [x] multi-architecture Docker images with persistent volumes
 - [x] Home Assistant app repository based on the container image
-- release retention and cleanup policy for development builds
+- [x] release retention and cleanup policy for development builds

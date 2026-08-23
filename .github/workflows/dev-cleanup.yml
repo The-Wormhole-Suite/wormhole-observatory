@@ -1,0 +1,25 @@
+name: Development build cleanup
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11.9"
+      - name: Clean expired development releases and container versions
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          DEV_RETENTION_DAYS: "30"
+          DEV_RETENTION_KEEP: "10"
+        run: python scripts/cleanup_dev_builds.py
