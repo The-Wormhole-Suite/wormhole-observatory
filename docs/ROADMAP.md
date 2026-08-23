@@ -1,7 +1,6 @@
 # Roadmap
 
 ## Priority 1: Stability and migration
-
 - [x] versioned SQLite migrations with rollback tests
 - [x] operating-system credential stores
 - [x] integration tests against multiple Pi-hole v6 minor versions
@@ -10,7 +9,6 @@
 - [x] optional authenticated external trigger adapter for scheduled or MCP-driven review jobs
 
 ## Priority 2: Evidence quality
-
 - [x] source-quality scoring and contradiction detection
 - [x] locally indexed additional list repositories with provenance
 - [x] URLhaus integration after its authenticated feed contract is implemented and tested
@@ -21,7 +19,6 @@
 - [x] golden datasets for source, prompt, and model comparison
 
 ## Priority 3: Domain intelligence
-
 - [x] protected services and compatibility profiles
 - [x] manual tags that override LLM tags
 - [x] service dependency graphs
@@ -29,7 +26,6 @@
 - [x] evidence freshness policies per tag and source
 
 ## Priority 4: Pi-hole management
-
 - [x] group assignment for domains and lists
 - [x] regex and subscribed-list views
 - [x] conflict detection across exact rules, regex rules, groups, and locks
@@ -38,7 +34,6 @@
 - [x] audit log and one-click rollback
 
 ## Priority 5: Review clients
-
 - [x] authenticated local HTTP API
 - [x] responsive web UI and PWA
 - [x] ntfy and UnifiedPush notifications with deep links
@@ -46,9 +41,17 @@
 - [x] LAN and Tailscale access without a required public cloud
 
 ## Priority 6: Distribution
-
 - [x] reproducible Windows and Linux Onedir releases
 - [x] code-signing and release provenance (keyless Sigstore + signed in-toto/SLSA provenance)
 - [x] multi-architecture Docker images with persistent volumes
 - [x] Home Assistant app repository based on the container image
 - [x] release retention and cleanup policy for development builds
+
+## Priority 7: CI efficiency
+- [x] avoid duplicate push and pull-request Python CI for feature branches
+- [x] cancel superseded workflow runs
+- [x] use a fast Python 3.12 pull-request gate and preserve the full supported-version gate on integration branches
+- [x] scope Pi-hole compatibility testing to relevant paths and use the current target for ordinary pull requests
+- [x] reserve reproducible Windows/Linux PR builds for packaging and release-build changes
+- [x] keep native container smoke coverage while limiting QEMU multi-architecture PR builds to image-affecting changes
+- [x] reduce scheduled development cleanup frequency while preserving post-publish cleanup
