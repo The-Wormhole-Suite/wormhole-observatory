@@ -18,7 +18,7 @@ dependencies = [
 
 [project.optional-dependencies]
 desktop-notifications = ["plyer>=2.1"]
-dev = ["pytest>=8", "ruff>=0.9"]
+dev = ["pytest>=8", "ruff>=0.9", "PyYAML==6.0.3"]
 build = ["pyinstaller>=6,<7"]
 windows-build = ["pyinstaller>=6,<7"]
 

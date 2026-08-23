@@ -1,0 +1,12 @@
+configuration:
+  api_token:
+    name: API-Token
+    description: Bearer-Token für die Wormhole-Review-API und PWA.
+  access_mode:
+    name: Netzwerk-Zugriffsmodus
+    description: Erlaubte Clients auf LAN, Tailscale, beides, lokal oder alle Quellen begrenzen.
+  max_domains:
+    name: Maximale Domains pro Anfrage
+    description: Maximale Anzahl Domains, die eine Review-Anfrage annehmen darf.
+network:
+  8765/tcp: Wormhole-Observatory-Review-API und PWA
