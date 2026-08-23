@@ -47,7 +47,7 @@
 
 ## Priority 6: Distribution
 
-- signed and reproducible Windows and Linux Onedir releases
+- [x] reproducible Windows and Linux Onedir releases
 - code-signing and release provenance
 - multi-architecture Docker images with persistent volumes
 - Home Assistant app repository based on the container image
