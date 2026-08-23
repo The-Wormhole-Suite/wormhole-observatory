@@ -1,11 +1,13 @@
 # Release signing and provenance
 
-Wormhole Observatory release archives use two independent trust mechanisms after the reproducible build check has passed:
+Wormhole Observatory release archives use two linked trust records after the reproducible build check has passed:
 
 1. **Sigstore keyless signing** signs each Windows and Linux release ZIP with the GitHub Actions OIDC identity of the release workflow.
-2. **GitHub Artifact Attestations** record signed build provenance for the same ZIP digest.
+2. A **portable in-toto/SLSA-v1 provenance statement** records the ZIP digest, source commit, Git ref, workflow identity, workflow run, and runner platform. That provenance file is separately signed and verified with the same Sigstore workflow identity.
 
 No long-lived private signing key is stored in the repository or in GitHub Secrets. The workflow receives a short-lived OIDC identity only for the running job.
+
+For public repositories, the workflow additionally publishes a GitHub Artifact Attestation. GitHub's hosted attestation storage is not available to this private repository under its current organization plan, so release trust does not depend on that plan-specific service.
 
 ## Order of operations
 
@@ -13,49 +15,67 @@ The release pipeline intentionally keeps reproducibility and signing separate:
 
 1. Build the Onedir package twice in clean environments.
 2. Verify that both release ZIPs are byte-for-byte identical.
-3. Sign the verified ZIP with Sigstore.
-4. Verify the new Sigstore signature immediately inside the workflow.
-5. Generate a GitHub artifact attestation for the ZIP digest.
-6. Upload the ZIP, SHA-256 sidecar, and Sigstore bundle as release artifacts.
+3. Generate an in-toto/SLSA-v1 provenance statement for the verified ZIP.
+4. Sign the ZIP with Sigstore and verify its workflow identity immediately.
+5. Sign the provenance statement with Sigstore and verify its workflow identity immediately.
+6. Upload the ZIP, SHA-256 sidecar, provenance statement, and Sigstore bundles as release artifacts.
 
-The Sigstore bundle is stored next to the archive as `<archive>.sigstore.json`. It contains the information required to validate the signature and its transparency-log proof.
+The generated files are stored next to the archive:
 
-## Verify a stable release with Sigstore
+- `<archive>.sigstore.json` - Sigstore signature bundle for the ZIP.
+- `<archive>.intoto.json` - portable provenance statement.
+- `<archive>.intoto.json.sigstore.json` - Sigstore signature bundle for the provenance.
 
-Install the Sigstore Python CLI and verify the downloaded ZIP against the expected release-workflow identity. Replace the example version and archive name with the release being checked.
+## Verify a stable release archive
+
+Install the current Sigstore Python CLI and verify the downloaded ZIP against the expected release-workflow identity. Replace the example version and archive name with the release being checked.
 
 ```bash
 sigstore verify identity \
-  --bundle Pi-Hole-Manager-linux-x86_64.zip.sigstore.json \
+  --bundle Pi-Hole-Manager-linux-x64.zip.sigstore.json \
   --cert-identity "https://github.com/The-Wormhole-Suite/wormhole-observatory/.github/workflows/release.yml@refs/tags/vX.Y.Z" \
   --cert-oidc-issuer "https://token.actions.githubusercontent.com" \
-  Pi-Hole-Manager-linux-x86_64.zip
+  Pi-Hole-Manager-linux-x64.zip
 ```
 
 For a Windows release, use the corresponding Windows ZIP and bundle. Development builds are signed by `.github/workflows/dev-release.yml@refs/heads/dev` instead.
 
-## Verify GitHub build provenance
+## Verify the portable provenance
 
-With a current GitHub CLI installation:
+First verify the provenance file itself with Sigstore:
 
 ```bash
-gh attestation verify Pi-Hole-Manager-linux-x86_64.zip \
-  -R The-Wormhole-Suite/wormhole-observatory
+sigstore verify identity \
+  --bundle Pi-Hole-Manager-linux-x64.zip.intoto.json.sigstore.json \
+  --cert-identity "https://github.com/The-Wormhole-Suite/wormhole-observatory/.github/workflows/release.yml@refs/tags/vX.Y.Z" \
+  --cert-oidc-issuer "https://token.actions.githubusercontent.com" \
+  Pi-Hole-Manager-linux-x64.zip.intoto.json
 ```
 
-GitHub verifies the signed attestation and shows the repository, workflow, commit, event, and other provenance claims associated with the artifact digest.
+Then inspect the statement and compare `subject[0].digest.sha256` with the SHA-256 digest of the downloaded ZIP. The statement also records the source commit, Git ref, workflow identity, workflow run, runner operating system, and runner architecture.
+
+If the repository becomes public in the future, GitHub's additional attestation can be checked with:
+
+```bash
+gh attestation verify Pi-Hole-Manager-linux-x64.zip \
+  -R The-Wormhole-Suite/wormhole-observatory
+```
 
 ## What each mechanism proves
 
 - The SHA-256 sidecar is a convenient integrity checksum, but by itself does not identify who produced the file.
-- The Sigstore signature binds the archive digest to the GitHub Actions workflow identity and records the signing event in Sigstore's transparency infrastructure.
-- The GitHub artifact attestation independently binds the archive digest to GitHub's build provenance, including repository and workflow context.
+- The ZIP Sigstore signature binds the archive digest to the GitHub Actions workflow identity.
+- The signed provenance independently records which source revision and workflow run produced that archive digest.
 - Reproducibility confirms that the controlled build process produced the same unsigned archive bytes twice before either trust layer was applied.
 
 These mechanisms complement each other; none of them is a claim that the software itself is vulnerability-free.
 
+## Transparency and private repositories
+
+Sigstore's public-good service uses public certificate/transparency infrastructure. Signing therefore makes the GitHub workflow identity, including the repository name, observable in public transparency records. Release contents and repository source are not published by this mechanism, but the repository/workflow identity is not confidential once keyless public Sigstore signing is used.
+
 ## Windows Authenticode
 
-The Windows executable is not Authenticode-signed by this keyless cross-platform release-signing layer. Authenticode/SmartScreen reputation requires a platform-native trusted code-signing certificate or managed signing service and therefore external account/certificate material that is not currently part of the project.
+The Windows executable is not Authenticode-signed by this cross-platform release-signing layer. Authenticode/SmartScreen reputation requires a platform-native trusted code-signing certificate or managed signing service and therefore external account/certificate material that is not currently part of the project.
 
 If native Windows signing is added later, it must run **after** the reproducibility check. The reproducible unsigned build remains the deterministic source artifact, while the platform-specific signature is an additional distribution layer.
