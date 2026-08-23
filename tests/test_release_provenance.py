@@ -8,7 +8,6 @@ import pytest
 
 from pihole_manager.release_provenance import generate
 
-
 _ENV = {
     "GITHUB_REPOSITORY": "The-Wormhole-Suite/wormhole-observatory",
     "GITHUB_SHA": "a" * 40,
