@@ -38,23 +38,13 @@ permissions:
 
 jobs:
   integration:
-    if: github.event_name != 'pull_request' || matrix.pr_target
     name: FTL ${{ matrix.ftl }} / Docker ${{ matrix.image_tag }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - image_tag: "2025.10.0"
-            ftl: "6.3"
-            pr_target: false
-          - image_tag: "2026.02.0"
-            ftl: "6.5"
-            pr_target: false
-          - image_tag: "2026.05.0"
-            ftl: "6.6"
-            pr_target: true
+        include: ${{ fromJSON(github.event_name == 'pull_request' && '[{"image_tag":"2026.05.0","ftl":"6.6"}]' || '[{"image_tag":"2025.10.0","ftl":"6.3"},{"image_tag":"2026.02.0","ftl":"6.5"},{"image_tag":"2026.05.0","ftl":"6.6"}]') }}
 
     steps:
       - uses: actions/checkout@v6
