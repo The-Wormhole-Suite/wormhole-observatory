@@ -4,9 +4,9 @@ import hashlib
 import json
 from pathlib import Path
 
-from scripts.generate_release_provenance import generate
-
 import pytest
+
+from scripts.generate_release_provenance import generate
 
 
 _ENV = {
