@@ -56,3 +56,14 @@
 - [x] keep native container smoke coverage while limiting QEMU multi-architecture PR builds to image-affecting changes
 - [x] reduce scheduled development cleanup frequency while preserving post-publish cleanup
 - [x] prevent public fork pull requests from receiving official release signatures or attestations
+
+## Priority 8: Release candidate 0.3.6
+- [x] reconcile release-facing naming, credential-store, public-repository, and Home Assistant documentation
+- [x] require the full supported Python and Pi-hole compatibility matrices on pull requests targeting `main`
+- [x] retire obsolete pre-roadmap integration pull requests
+- [ ] promote the completed integration branch to `main` through the protected pull-request flow
+- [ ] pass the complete promotion gate, including reproducible Windows/Linux artifacts and container verification
+- [ ] publish and verify a public `v0.3.6-rc.1` prerelease from the promoted `main` commit
+- [ ] validate desktop updater/download, signed provenance, GitHub attestations, and multi-architecture container behavior against the release candidate
+- [ ] publish stable `v0.3.6` only after release-candidate validation
+- [ ] verify the `0.3.6` GHCR image resolves for the experimental Home Assistant App and record the post-release baseline

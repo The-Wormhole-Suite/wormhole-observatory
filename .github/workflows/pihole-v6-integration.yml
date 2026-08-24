@@ -43,7 +43,7 @@ jobs:
     timeout-minutes: 20
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(github.event_name == 'pull_request' && '{"include":[{"image_tag":"2026.05.0","ftl":"6.6"}]}' || '{"include":[{"image_tag":"2025.10.0","ftl":"6.3"},{"image_tag":"2026.02.0","ftl":"6.5"},{"image_tag":"2026.05.0","ftl":"6.6"}]}') }}
+      matrix: ${{ fromJSON(github.event_name == 'pull_request' && github.base_ref != 'main' && '{"include":[{"image_tag":"2026.05.0","ftl":"6.6"}]}' || '{"include":[{"image_tag":"2025.10.0","ftl":"6.3"},{"image_tag":"2026.02.0","ftl":"6.5"},{"image_tag":"2026.05.0","ftl":"6.6"}]}') }}
 
     steps:
       - uses: actions/checkout@v6

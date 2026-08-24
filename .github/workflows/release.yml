@@ -142,4 +142,4 @@ jobs:
             --target "$GITHUB_SHA" \
             $prerelease \
             --generate-notes \
-            --title "Pi-hole Manager ${GITHUB_REF_NAME}"
+            --title "Wormhole Observatory ${GITHUB_REF_NAME}"
