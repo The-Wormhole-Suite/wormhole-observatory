@@ -56,3 +56,12 @@
 - [x] keep native container smoke coverage while limiting QEMU multi-architecture PR builds to image-affecting changes
 - [x] reduce scheduled development cleanup frequency while preserving post-publish cleanup
 - [x] prevent public fork pull requests from receiving official release signatures or attestations
+
+## Priority 8: Public release hardening
+- [x] remediate known vulnerabilities in the current direct dependency baseline
+- [ ] add an explicit repository license after the project license is selected
+- [ ] add a security policy with private vulnerability reporting guidance
+- [ ] enforce dependency review for pull requests that change dependencies
+- [ ] add CodeQL scanning for Python and GitHub Actions workflows
+- [ ] audit public README, contribution guidance, and release documentation
+- [ ] run the complete release-candidate gate before creating the first public v0.3.6 tag
