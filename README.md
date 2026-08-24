@@ -1,6 +1,6 @@
-# Pi-hole Manager
+# Wormhole Observatory
 
-Pi-hole Manager is a desktop application for **Pi-hole v6 or newer**. It combines management of exact whitelist and blacklist entries with local domain intelligence, evidence collection, structured LLM classification, and conservative automation.
+Wormhole Observatory is the Pi-hole v6 management and domain-intelligence application of The Wormhole Suite. It combines management of exact allow/deny entries with local domain intelligence, evidence collection, structured LLM classification, and conservative automation.
 
 ## Status
 
@@ -292,7 +292,7 @@ The resulting Onedir application is written to `dist\Pi-Hole-Manager\`. Runtime 
 
 ## Configuration
 
-The first launch creates a local `options.json`. It may contain Pi-hole, LLM, and research credentials in plain text. Operating-system credential-store integration is planned before a stable release.
+The first launch creates a local `options.json`. On supported desktop systems, Pi-hole, external-trigger, LLM, and research secrets are stored through the operating-system credential store and removed from the serialized configuration after successful storage. If no usable credential-store backend is available, Wormhole Observatory retains the secret in `options.json` rather than risking data loss; protect the application data directory accordingly on headless or minimal systems.
 
 Pi-hole exposes version-specific API documentation at `http://pi.hole/api/docs`.
 
@@ -322,11 +322,13 @@ The Application settings provide two channels:
 - **Stable releases** for normal version tags
 - **Prerelease versions** for beta, release-candidate, and automated `dev`-branch Onedir builds
 
-Update checks use the public GitHub Releases API. They remain unavailable while the repository is private; no GitHub token is stored or requested by the application.
+Update checks use the public GitHub Releases API; no GitHub token is stored or requested by the application.
 
 Container installations do not use the desktop self-updater. Docker or the chosen container manager
-pulls a new image and recreates the container while persistent data remains in mounted volumes. A
-future Home Assistant app uses the same container image and Home Assistant's own update flow.
+pulls a new image and recreates the container while persistent data remains in mounted volumes. The
+Home Assistant App repository in this repository uses the same multi-architecture container image and
+Home Assistant's own update flow. The App remains marked experimental; a matching published image
+tag must exist before a specific App version can be installed.
 
 ## Evidence source tests
 
