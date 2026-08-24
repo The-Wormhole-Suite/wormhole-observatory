@@ -1,1 +1,361 @@
-PLACEHOLDER
+from __future__ import annotations
+
+import logging
+import threading
+import time
+from pathlib import Path
+from typing import Any
+from urllib.parse import quote, urlsplit, urlunsplit
+
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+from pihole6api.errors import (
+    PiHole6AuthenticationError,
+    PiHole6ConnectionError,
+    PiHole6HTTPError,
+)
+from pihole6api.health import ConnectionHealth, ConnectionState
+
+log = logging.getLogger(__name__)
+
+
+def normalize_api_url(base_url: str) -> str:
+    value = base_url.strip()
+    if not value:
+        raise ValueError("Pi-hole base URL must not be empty")
+    if "://" not in value:
+        value = f"http://{value}"
+
+    parsed = urlsplit(value)
+    if not parsed.hostname:
+        raise ValueError(f"Invalid Pi-hole base URL: {base_url!r}")
+    if parsed.scheme.lower() not in {"http", "https"}:
+        raise ValueError("Pi-hole base URL must use http or https")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("Pi-hole credentials must not be embedded in the base URL")
+
+    path = parsed.path.rstrip("/")
+    if path.endswith("/admin/index.php"):
+        path = path[: -len("/admin/index.php")]
+    elif path.endswith("/admin"):
+        path = path[: -len("/admin")]
+    if path.endswith("/api"):
+        path = path[: -len("/api")]
+
+    api_path = f"{path}/api/" if path else "/api/"
+    return urlunsplit((parsed.scheme.lower(), parsed.netloc, api_path, "", ""))
+
+
+class PiHole6Connection:
+    def __init__(
+        self,
+        base_url: str,
+        password: str = "",
+        *,
+        verify_tls: bool | str = True,
+        timeout: float = 10.0,
+        max_retries: int = 2,
+        session: requests.Session | None = None,
+    ) -> None:
+        self.base_url = normalize_api_url(base_url)
+        self.password = password or ""
+        if verify_tls is False:
+            raise ValueError(
+                "Disabling TLS certificate verification is not supported; use HTTP for a trusted "
+                "local network or provide a CA bundle path."
+            )
+        self.verify_tls = verify_tls if isinstance(verify_tls, str) else True
+        self.timeout = max(1.0, float(timeout))
+        self.session_id: str | None = None
+        self.csrf_token: str | None = None
+        self.validity: int | None = None
+        self._lock = threading.RLock()
+        self._closed = False
+        self._health = ConnectionHealth()
+
+        self.session = session or requests.Session()
+        retries = max(0, int(max_retries))
+        retry = Retry(
+            total=retries,
+            connect=0,
+            read=min(1, retries),
+            status=retries,
+            backoff_factor=0.5,
+            status_forcelist=(429, 500, 502, 503, 504),
+            allowed_methods=frozenset({"GET", "HEAD", "OPTIONS"}),
+            respect_retry_after_header=True,
+        )
+        adapter = HTTPAdapter(max_retries=retry, pool_connections=4, pool_maxsize=8)
+        self.session.mount("http://", adapter)
+        self.session.mount("https://", adapter)
+
+    @property
+    def health(self) -> ConnectionHealth:
+        with self._lock:
+            return self._health
+
+    def _record_response(self, response: requests.Response, latency_ms: int) -> None:
+        now = time.time()
+        status = int(response.status_code)
+        previous = self._health
+        if 200 <= status < 300:
+            state = ConnectionState.ONLINE
+            failures = 0
+            last_success = now
+            error = ""
+        elif status in {401, 403}:
+            state = ConnectionState.AUTH_ERROR
+            failures = previous.consecutive_failures + 1
+            last_success = previous.last_success_at
+            error = response.reason or "Authentication failed"
+        elif status == 429 or status >= 500:
+            state = ConnectionState.DEGRADED
+            failures = previous.consecutive_failures + 1
+            last_success = previous.last_success_at
+            error = response.reason or f"HTTP {status}"
+        else:
+            state = ConnectionState.API_ERROR
+            failures = previous.consecutive_failures + 1
+            last_success = previous.last_success_at
+            error = response.reason or f"HTTP {status}"
+        self._health = ConnectionHealth(
+            state=state,
+            last_checked_at=now,
+            last_success_at=last_success,
+            latency_ms=max(0, int(latency_ms)),
+            consecutive_failures=failures,
+            status_code=status,
+            last_error=error,
+        )
+
+    def _record_failure(self, state: ConnectionState, error: object) -> None:
+        previous = self._health
+        self._health = ConnectionHealth(
+            state=state,
+            last_checked_at=time.time(),
+            last_success_at=previous.last_success_at,
+            latency_ms=None,
+            consecutive_failures=previous.consecutive_failures + 1,
+            status_code=None,
+            last_error=str(error),
+        )
+
+    def _record_auth_error(self, message: str) -> None:
+        previous = self._health
+        self._health = ConnectionHealth(
+            state=ConnectionState.AUTH_ERROR,
+            last_checked_at=time.time(),
+            last_success_at=previous.last_success_at,
+            latency_ms=None,
+            consecutive_failures=previous.consecutive_failures + 1,
+            status_code=401,
+            last_error=message,
+        )
+
+    def _url(self, endpoint: str) -> str:
+        return f"{self.base_url}{endpoint.lstrip('/')}"
+
+    def _authenticate(self) -> None:
+        with self._lock:
+            if self.session_id:
+                return
+            started = time.perf_counter()
+            try:
+                response = self.session.post(
+                    self._url("auth"),
+                    json={"password": self.password},
+                    timeout=self.timeout,
+                )
+            except requests.exceptions.SSLError as exc:
+                self._record_failure(ConnectionState.TLS_ERROR, exc)
+                raise PiHole6ConnectionError("TLS verification failed during authentication") from exc
+            except (requests.Timeout, requests.ConnectionError) as exc:
+                self._record_failure(ConnectionState.OFFLINE, exc)
+                raise PiHole6ConnectionError("Could not connect to Pi-hole for authentication") from exc
+            latency_ms = int((time.perf_counter() - started) * 1000)
+            self._record_response(response, latency_ms)
+            if not response.ok:
+                self._record_auth_error(response.reason or "Authentication failed")
+                raise PiHole6AuthenticationError(
+                    f"Authentication failed with HTTP {response.status_code}"
+                )
+            try:
+                payload = response.json()
+            except ValueError as exc:
+                self._record_auth_error("Authentication returned invalid JSON")
+                raise PiHole6AuthenticationError("Authentication returned invalid JSON") from exc
+            session = payload.get("session") if isinstance(payload, dict) else None
+            if not isinstance(session, dict) or not session.get("valid"):
+                message = "Authentication was rejected"
+                self._record_auth_error(message)
+                raise PiHole6AuthenticationError(message)
+            self.session_id = str(session.get("sid") or "") or None
+            self.csrf_token = str(session.get("csrf") or "") or None
+            validity = session.get("validity")
+            self.validity = int(validity) if validity is not None else None
+            if not self.session_id:
+                message = "Authentication returned no session ID"
+                self._record_auth_error(message)
+                raise PiHole6AuthenticationError(message)
+
+    def _headers(self) -> dict[str, str]:
+        if self.password and not self.session_id:
+            self._authenticate()
+        headers = {"Accept": "application/json"}
+        if self.session_id:
+            headers["X-FTL-SID"] = self.session_id
+        if self.csrf_token:
+            headers["X-FTL-CSRF"] = self.csrf_token
+        return headers
+
+    def _send_raw(
+        self,
+        method: str,
+        endpoint: str,
+        *,
+        params: dict[str, Any] | None = None,
+        json_data: Any = None,
+        files: Any = None,
+        form_data: Any = None,
+        authenticated: bool = True,
+    ) -> requests.Response:
+        if self._closed:
+            raise PiHole6ConnectionError("Connection is already closed")
+        url = self._url(endpoint)
+        headers = self._headers() if authenticated else {"Accept": "application/json"}
+        started = time.perf_counter()
+        try:
+            request_kwargs: dict[str, Any] = {
+                "method": method,
+                "url": url,
+                "headers": headers,
+                "params": params,
+                "json": json_data,
+                "files": files,
+                "data": form_data,
+                "timeout": self.timeout,
+            }
+            if isinstance(self.verify_tls, str):
+                request_kwargs["verify"] = self.verify_tls
+            response = self.session.request(**request_kwargs)
+        except requests.exceptions.SSLError as exc:
+            self._record_failure(ConnectionState.TLS_ERROR, exc)
+            raise PiHole6ConnectionError(
+                f"TLS verification failed for {url}. Check the certificate and TLS setting."
+            ) from exc
+        except requests.Timeout as exc:
+            self._record_failure(ConnectionState.OFFLINE, exc)
+            raise PiHole6ConnectionError(f"Request timed out: {url}") from exc
+        except requests.ConnectionError as exc:
+            self._record_failure(ConnectionState.OFFLINE, exc)
+            raise PiHole6ConnectionError(
+                f"Could not connect to {url}. Check the Pi-hole address, protocol, and port."
+            ) from exc
+        except (
+            requests.exceptions.InvalidSchema,
+            requests.exceptions.InvalidURL,
+            requests.exceptions.MissingSchema,
+        ) as exc:
+            self._record_failure(ConnectionState.INVALID_CONFIG, exc)
+            raise PiHole6ConnectionError(f"Invalid Pi-hole URL: {url}") from exc
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        self._record_response(response, latency_ms)
+        return response
+
+    def _send(
+        self,
+        method: str,
+        endpoint: str,
+        *,
+        params: dict[str, Any] | None = None,
+        json_data: Any = None,
+        files: Any = None,
+        form_data: Any = None,
+        binary: bool = False,
+        authenticated: bool = True,
+    ) -> Any:
+        response = self._send_raw(
+            method,
+            endpoint,
+            params=params,
+            json_data=json_data,
+            files=files,
+            form_data=form_data,
+            authenticated=authenticated,
+        )
+        if response.status_code in {401, 403} and authenticated and self.password:
+            with self._lock:
+                self.session_id = None
+                self.csrf_token = None
+            response = self._send_raw(
+                method,
+                endpoint,
+                params=params,
+                json_data=json_data,
+                files=files,
+                form_data=form_data,
+                authenticated=authenticated,
+            )
+        if not response.ok:
+            raise PiHole6HTTPError(
+                response.status_code,
+                response.reason or "Pi-hole API request failed",
+            )
+        if binary:
+            return response.content
+        if not response.content:
+            return None
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise PiHole6HTTPError(response.status_code, "Pi-hole returned invalid JSON") from exc
+
+    def get(self, endpoint: str, *, params: dict[str, Any] | None = None, binary: bool = False) -> Any:
+        return self._send("GET", endpoint, params=params, binary=binary)
+
+    def post(self, endpoint: str, *, data: Any = None) -> Any:
+        return self._send("POST", endpoint, json_data=data)
+
+    def put(self, endpoint: str, *, data: Any = None) -> Any:
+        return self._send("PUT", endpoint, json_data=data)
+
+    def patch(self, endpoint: str, *, data: Any = None) -> Any:
+        return self._send("PATCH", endpoint, json_data=data)
+
+    def delete(self, endpoint: str) -> Any:
+        return self._send("DELETE", endpoint)
+
+    def upload(self, endpoint: str, file_path: str, data: dict[str, Any] | None = None) -> Any:
+        path = Path(file_path)
+        with path.open("rb") as handle:
+            return self._send(
+                "POST",
+                endpoint,
+                files={"file": (path.name, handle)},
+                form_data=data or {},
+            )
+
+    def close(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            sid = self.session_id
+            self.session_id = None
+            self.csrf_token = None
+        if sid:
+            try:
+                self.session.delete(
+                    self._url("auth"),
+                    headers={"X-FTL-SID": sid},
+                    timeout=self.timeout,
+                )
+            except requests.RequestException:
+                log.debug("Could not close Pi-hole session", exc_info=True)
+        self.session.close()
+
+
+def encode_path(value: str) -> str:
+    return quote(value, safe="")
