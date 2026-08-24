@@ -63,5 +63,5 @@
 - [x] add a security policy with private vulnerability reporting guidance
 - [x] enforce dependency review for pull requests that change dependencies
 - [x] add CodeQL scanning for Python and GitHub Actions workflows
-- [ ] audit public README, contribution guidance, and release documentation
+- [x] audit public README, contribution guidance, and release documentation
 - [ ] run the complete release-candidate gate before creating the first public v0.3.6 tag
