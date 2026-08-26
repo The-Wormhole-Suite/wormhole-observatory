@@ -1,8 +1,11 @@
 # Roadmap
 
+## Completed
+
+- versioned SQLite migrations with per-migration transactions and rollback tests (schema v12)
+
 ## Priority 1: Stability and migration
 
-- versioned SQLite migrations with rollback tests
 - operating-system credential stores
 - integration tests against multiple Pi-hole v6 minor versions
 - connection health state and clearer offline behavior
