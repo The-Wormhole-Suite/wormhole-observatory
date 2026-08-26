@@ -90,6 +90,9 @@ def _apply_pending_migrations(current_version: int) -> None:
         try:
             connection.execute("BEGIN IMMEDIATE")
             actual_version = _existing_schema_version(connection)
+            if actual_version >= version:
+                connection.rollback()
+                continue
             if actual_version != version - 1:
                 raise RuntimeError(
                     "Database schema changed while migrations were running "
@@ -116,20 +119,21 @@ def _apply_pending_migrations(current_version: int) -> None:
 
 
 def init_db() -> None:
-    connection = _connect()
-    try:
-        existing_version = _existing_schema_version(connection)
-    finally:
-        connection.close()
+    with database_core._DB_LOCK:
+        connection = _connect()
+        try:
+            existing_version = _existing_schema_version(connection)
+        finally:
+            connection.close()
 
-    if existing_version > DATABASE_SCHEMA_VERSION:
-        raise RuntimeError(
-            "The database was created by a newer Pi-hole Manager version "
-            f"(schema {existing_version}; supported up to {DATABASE_SCHEMA_VERSION})."
-        )
+        if existing_version > DATABASE_SCHEMA_VERSION:
+            raise RuntimeError(
+                "The database was created by a newer Pi-hole Manager version "
+                f"(schema {existing_version}; supported up to {DATABASE_SCHEMA_VERSION})."
+            )
 
-    if existing_version <= LEGACY_SCHEMA_VERSION:
-        database_core.init_db()
-        existing_version = LEGACY_SCHEMA_VERSION
+        if existing_version <= LEGACY_SCHEMA_VERSION:
+            database_core.init_db()
+            existing_version = LEGACY_SCHEMA_VERSION
 
-    _apply_pending_migrations(existing_version)
+        _apply_pending_migrations(existing_version)
