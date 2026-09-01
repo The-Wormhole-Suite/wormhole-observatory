@@ -38,7 +38,6 @@ def test_real_pihole_v6_api_contract() -> None:
     with PiHole6Client(
         BASE_URL,
         PASSWORD,
-        verify_tls=False,
         timeout=15,
         max_retries=2,
     ) as client:
