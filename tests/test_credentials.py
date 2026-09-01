@@ -170,4 +170,5 @@ def test_keyring_backend_exception_details_are_not_logged(monkeypatch, caplog) -
     assert value == ""
     assert written is False
     assert marker not in caplog.text
+    assert "pihole/password" not in caplog.text
     assert "RuntimeError" in caplog.text
