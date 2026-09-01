@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pihole_manager.database import (
+    DATABASE_SCHEMA_VERSION,
     init_db,
     review_get,
     review_save,
@@ -98,7 +99,7 @@ def test_legacy_staging_table_migrates_before_pool_index_creation(
         "SELECT value FROM schema_meta WHERE key = 'schema_version'"
     ).fetchone()[0]
     connection.close()
-    assert version == "12"
+    assert version == str(DATABASE_SCHEMA_VERSION)
 
 
 def test_schema_migration_rolls_back_on_failure(monkeypatch, tmp_path) -> None:
