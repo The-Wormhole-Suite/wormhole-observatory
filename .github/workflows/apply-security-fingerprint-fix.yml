@@ -1,0 +1,98 @@
+name: Apply CodeQL fingerprint remediation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Apply fingerprint remediation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              target = Path(path)
+              text = target.read_text(encoding="utf-8")
+              count = text.count(old)
+              if count != 1:
+                  raise RuntimeError(f"Expected one match in {path}, found {count}")
+              target.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          replace_once("pihole_manager/quota.py", "import hashlib\n", "import hmac\n")
+          replace_once(
+              "pihole_manager/quota.py",
+              "_METRIC_COLUMNS = {",
+              '_QUOTA_FINGERPRINT_CONTEXT = b"wormhole-observatory:quota-scope:v1"\n_METRIC_COLUMNS = {',
+          )
+          replace_once(
+              "pihole_manager/quota.py",
+              '''    account_fingerprint = hashlib.sha256(\n        (provider.api_key or provider.provider_id).encode("utf-8")\n    ).hexdigest()[:16]\n''',
+              '''    account_identity = (provider.api_key or provider.provider_id).encode("utf-8")\n    # This is a stable quota/account namespace fingerprint, not credential\n    # authentication or password storage. HMAC avoids exposing a raw hash of\n    # the credential while preserving deterministic grouping across restarts.\n    account_fingerprint = hmac.digest(\n        _QUOTA_FINGERPRINT_CONTEXT, account_identity, "sha256"\n    ).hex()[:16]\n''',
+          )
+
+          replace_once(
+              "pihole_manager/research_catalogs.py", "import hashlib\n", "import hmac\n"
+          )
+          replace_once(
+              "pihole_manager/research_catalogs.py",
+              "_INDEX_LOCK = threading.RLock()",
+              '_INDEX_FINGERPRINT_CONTEXT = b"wormhole-observatory:catalog-index:v1"\n_INDEX_LOCK = threading.RLock()',
+          )
+          replace_once(
+              "pihole_manager/research_catalogs.py",
+              "    digest = hashlib.sha256(payload).hexdigest()\n",
+              '    digest = hmac.digest(_INDEX_FINGERPRINT_CONTEXT, payload, "sha256").hex()\n',
+          )
+
+          replace_once(
+              "tests/test_quota.py",
+              '''    quota_runtime_states,\n    reserve_quota,\n''',
+              '''    quota_runtime_states,\n    quota_scope_key,\n    reserve_quota,\n''',
+          )
+          replace_once(
+              "tests/test_quota.py",
+              '''def _provider(*, provider_id: str = "provider-test") -> LLMProviderOptions:\n''',
+              '''def _provider(\n    *, provider_id: str = "provider-test", api_key: str = "shared-key"\n) -> LLMProviderOptions:\n''',
+          )
+          replace_once(
+              "tests/test_quota.py",
+              '        api_key="shared-key",\n',
+              '        api_key=api_key,\n',
+          )
+          replace_once(
+              "tests/test_quota.py",
+              "\n\ndef test_request_quota_is_reserved_atomically",
+              '''\n\ndef test_quota_scope_key_uses_stable_non_plaintext_account_fingerprint() -> None:\n    limits = (\n        ProviderLimit(\n            metric="requests",\n            amount=10,\n            window_seconds=60,\n            scope="account",\n            source="test",\n        ),\n    )\n    profile = _profile(*limits)\n    first = _provider(provider_id="provider-a")\n    second = _provider(provider_id="provider-b")\n\n    first_key = quota_scope_key(first, profile)\n    second_key = quota_scope_key(second, profile)\n\n    assert first_key == second_key\n    assert first.api_key not in first_key\n\n    different = _provider(\n        provider_id="provider-c", api_key="different-shared-key"\n    )\n    assert quota_scope_key(different, profile) != first_key\n\n\ndef test_request_quota_is_reserved_atomically''',
+          )
+          PY
+      - name: Validate before commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -e ".[dev]"
+          python scripts/check_repository_integrity.py
+          ruff check pihole_manager/quota.py pihole_manager/research_catalogs.py tests/test_quota.py tests/test_research.py
+          pytest tests/test_quota.py tests/test_research.py
+      - name: Commit source remediation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add pihole_manager/quota.py pihole_manager/research_catalogs.py tests/test_quota.py
+          git commit -m "Clarify non-password security fingerprints"
+          git push origin "HEAD:${{ github.ref_name }}"
