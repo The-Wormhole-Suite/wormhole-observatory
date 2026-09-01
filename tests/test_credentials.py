@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 
 from pihole_manager import credentials
 from pihole_manager.config import load_options, options_path, save_options
@@ -147,3 +148,26 @@ def test_first_start_hydrates_existing_keyring_secret_without_deleting_it(
     assert key not in fake.deleted
     raw = json.loads(options_path().read_text(encoding="utf-8"))
     assert raw["pihole"]["password"] == ""
+
+
+def test_keyring_backend_exception_details_are_not_logged(monkeypatch, caplog) -> None:
+    marker = "sensitive-backend-detail"
+
+    class BrokenKeyring:
+        def get_password(self, service: str, key: str):
+            raise RuntimeError(marker)
+
+        def set_password(self, service: str, key: str, value: str) -> None:
+            raise RuntimeError(marker)
+
+    monkeypatch.setattr(credentials, "_keyring_module", lambda: BrokenKeyring())
+
+    with caplog.at_level(logging.WARNING, logger=credentials.__name__):
+        state, value = credentials._read_secret("pihole/password")
+        written = credentials._write_secret("pihole/password", "do-not-log")
+
+    assert state is credentials.CredentialReadState.UNAVAILABLE
+    assert value == ""
+    assert written is False
+    assert marker not in caplog.text
+    assert "RuntimeError" in caplog.text

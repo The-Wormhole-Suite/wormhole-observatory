@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,6 +26,9 @@ CRITICAL_MIN_LINES = {
 
 TEXT_SUFFIXES = {".py", ".yml", ".yaml", ".toml", ".sh", ".ps1"}
 RESTORE_SENTINEL = "PLACEHOLDER" + "_RESTORE_FROM_REPO_REQUIRED"
+ACTION_USES_RE = re.compile(r"^\s*(?:-\s*)?uses:\s+([^@\s]+)@([^\s#]+)")
+IMMUTABLE_ACTION_REF_RE = re.compile(r"^[0-9a-fA-F]{40}$")
+TRUSTED_MUTABLE_ACTION_OWNERS = {"actions", "github"}
 
 
 def _text_files() -> list[Path]:
@@ -63,6 +67,20 @@ def check_repository_integrity() -> list[str]:
         for line_number, line in enumerate(text.splitlines(), start=1):
             if line.strip() == "PLACEHOLDER":
                 errors.append(f"standalone placeholder found in {relative}:{line_number}")
+            if relative.startswith(".github/workflows/"):
+                match = ACTION_USES_RE.match(line)
+                if match:
+                    action, ref = match.groups()
+                    owner = action.split("/", 1)[0].lower()
+                    if (
+                        not action.startswith("./")
+                        and owner not in TRUSTED_MUTABLE_ACTION_OWNERS
+                        and not IMMUTABLE_ACTION_REF_RE.fullmatch(ref)
+                    ):
+                        errors.append(
+                            "third-party action is not pinned to a full commit SHA: "
+                            f"{relative}:{line_number} ({action}@{ref})"
+                        )
 
     return errors
 

@@ -84,7 +84,7 @@ jobs:
         run: python -m pihole_manager.release_provenance release-pass1
 
       - name: Sign and verify release archive with Sigstore
-        uses: sigstore/gh-action-sigstore-python@v3.4.0
+        uses: sigstore/gh-action-sigstore-python@5b79a39c381910c090341a2c9b0bf022c8b387e1 # v3.4.0
         with:
           inputs: release-pass1/*.zip
           verify: true
@@ -94,7 +94,7 @@ jobs:
           release-signing-artifacts: false
 
       - name: Sign and verify release provenance with Sigstore
-        uses: sigstore/gh-action-sigstore-python@v3.4.0
+        uses: sigstore/gh-action-sigstore-python@5b79a39c381910c090341a2c9b0bf022c8b387e1 # v3.4.0
         with:
           inputs: release-pass1/*.intoto.json
           verify: true

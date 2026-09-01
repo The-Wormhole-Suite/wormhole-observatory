@@ -42,7 +42,11 @@ def _read_secret(key: str) -> tuple[CredentialReadState, str]:
     try:
         value = str(keyring.get_password(SERVICE_NAME, key) or "")
     except Exception as exc:  # backend failures must not make configuration unreadable
-        log.warning("Credential store is unavailable while reading %s: %s", key, exc)
+        log.warning(
+            "Credential store is unavailable while reading %s (%s)",
+            key,
+            type(exc).__name__,
+        )
         _set_read_state(key, CredentialReadState.UNAVAILABLE)
         return CredentialReadState.UNAVAILABLE, ""
     state = CredentialReadState.PRESENT if value else CredentialReadState.MISSING
@@ -59,7 +63,11 @@ def _write_secret(key: str, value: str) -> bool:
         _set_read_state(key, CredentialReadState.PRESENT)
         return True
     except Exception as exc:  # keep plaintext as a no-data-loss fallback
-        log.warning("Credential store is unavailable while writing %s: %s", key, exc)
+        log.warning(
+            "Credential store is unavailable while writing %s (%s)",
+            key,
+            type(exc).__name__,
+        )
         return False
 
 
