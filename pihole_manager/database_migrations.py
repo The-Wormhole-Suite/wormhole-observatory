@@ -8,8 +8,11 @@ from dataclasses import dataclass
 from pihole_manager import database_core
 from pihole_manager.config import database_path
 
+# database_core owns the historical schema/migration chain through v12. Keep that
+# implementation frozen as the compatibility baseline; all new migrations belong
+# to this transactional runner starting with v13.
 LEGACY_SCHEMA_VERSION = database_core.DATABASE_SCHEMA_VERSION
-DATABASE_SCHEMA_VERSION = 12
+DATABASE_SCHEMA_VERSION = LEGACY_SCHEMA_VERSION + 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,7 +62,7 @@ def _set_schema_version(connection: sqlite3.Connection, version: int) -> None:
     )
 
 
-def _migration_12_add_migration_history(connection: sqlite3.Connection) -> None:
+def _migration_13_add_migration_history(connection: sqlite3.Connection) -> None:
     connection.execute(
         """
         CREATE TABLE schema_migrations (
@@ -69,13 +72,22 @@ def _migration_12_add_migration_history(connection: sqlite3.Connection) -> None:
         )
         """
     )
+    # v12 and earlier predate persistent migration history. Record the boundary
+    # explicitly with timestamp 0 rather than inventing an application time.
+    connection.execute(
+        """
+        INSERT INTO schema_migrations(version, name, applied_at)
+        VALUES (?, ?, 0)
+        """,
+        (LEGACY_SCHEMA_VERSION, "legacy schema baseline (pre-history)"),
+    )
 
 
 _SCHEMA_MIGRATIONS: dict[int, SchemaMigration] = {
-    12: SchemaMigration(
-        version=12,
+    13: SchemaMigration(
+        version=13,
         name="add migration history",
-        apply=_migration_12_add_migration_history,
+        apply=_migration_13_add_migration_history,
     ),
 }
 

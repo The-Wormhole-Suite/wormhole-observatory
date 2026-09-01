@@ -2,11 +2,11 @@
 
 ## Completed
 
-- versioned SQLite migrations with per-migration transactions and rollback tests (schema v12)
+- transactional versioned SQLite migration runner with persistent migration history; legacy schema v12 is preserved as the compatibility baseline and the canonical schema is v13
 
 ## Priority 0: Framework audit recovery gate
 - [x] establish a clean recovery baseline from the last verified release-candidate tree, excluding the transport-corrupted commits from the canonical path
-- [x] reconcile the recovery baseline with current `main`, preserving completed roadmap work while incorporating schema v12 transactional migrations
+- [x] reconcile the recovery baseline with current `main`, preserving completed roadmap work while incorporating the transactional migration runner
 - [ ] fix any Ruff/test failures exposed by the reconciled tree and require green Python CI before further feature work
 - [ ] verify every previously completed roadmap item still has implementation plus test/release evidence after reconciliation; do not trust checkbox state alone
 - [ ] rerun the full security and release-candidate gates on the reconciled canonical branch: Python CI, Pi-hole v6 integration, CodeQL, dependency review, reproducible desktop builds, container amd64/arm64 verification, signing/provenance checks
