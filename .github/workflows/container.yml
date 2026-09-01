@@ -38,8 +38,8 @@ jobs:
         id: scope
         if: github.event_name == 'pull_request'
         env:
-          BASE_SHA:
-          HEAD_SHA:
+          BASE_SHA: 
+          HEAD_SHA: 
         shell: bash
         run: |
           set -euo pipefail
