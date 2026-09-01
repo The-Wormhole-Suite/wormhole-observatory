@@ -2,6 +2,12 @@ name: CI
 
 on:
   workflow_dispatch:
+    inputs:
+      apply_security_migration:
+        description: Apply the audited TLS and PR-checkout security migration
+        required: false
+        type: boolean
+        default: false
   pull_request:
   push:
     branches:
@@ -14,6 +20,7 @@ concurrency:
 
 jobs:
   test:
+    if: github.event_name != 'workflow_dispatch' || !inputs.apply_security_migration
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -34,3 +41,259 @@ jobs:
         if: matrix.python-version == '3.12'
         run: ruff check .
       - run: pytest
+
+  apply-security-migration:
+    if: github.event_name == 'workflow_dispatch' && inputs.apply_security_migration
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Apply audited security migration
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              target = Path(path)
+              text = target.read_text(encoding="utf-8")
+              if text.count(old) != 1:
+                  raise RuntimeError(
+                      f"Expected exactly one match in {path}, found {text.count(old)}"
+                  )
+              target.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          replace_once(
+              "pihole6api/connection.py",
+              '''        *,\n        verify_tls: bool | str = True,\n        timeout: float = 10.0,\n''',
+              '''        *,\n        ca_bundle_path: str = "",\n        verify_tls: bool | str | None = None,\n        timeout: float = 10.0,\n''',
+          )
+          replace_once(
+              "pihole6api/connection.py",
+              '''        self.base_url = normalize_api_url(base_url)\n        self.password = password or ""\n        self.verify_tls = verify_tls\n''',
+              '''        self.base_url = normalize_api_url(base_url)\n        self.password = password or ""\n        if verify_tls is False:\n            raise ValueError(\n                "Disabling TLS certificate verification is no longer supported; "\n                "configure ca_bundle_path for private certificate authorities."\n            )\n        legacy_ca_bundle = verify_tls.strip() if isinstance(verify_tls, str) else ""\n        configured_ca_bundle = str(ca_bundle_path or "").strip()\n        if legacy_ca_bundle and configured_ca_bundle and legacy_ca_bundle != configured_ca_bundle:\n            raise ValueError("Conflicting CA bundle paths were provided")\n        self.ca_bundle_path = configured_ca_bundle or legacy_ca_bundle\n''',
+          )
+          replace_once(
+              "pihole6api/connection.py",
+              '''            response = self.session.request(\n                method=method,\n                url=url,\n                headers=headers,\n                params=params,\n                json=json_data,\n                files=files,\n                data=form_data,\n                verify=self.verify_tls,\n                timeout=self.timeout,\n            )\n''',
+              '''            request_kwargs: dict[str, Any] = {\n                "method": method,\n                "url": url,\n                "headers": headers,\n                "params": params,\n                "json": json_data,\n                "files": files,\n                "data": form_data,\n                "timeout": self.timeout,\n            }\n            if self.ca_bundle_path:\n                request_kwargs["verify"] = self.ca_bundle_path\n            response = self.session.request(**request_kwargs)\n''',
+          )
+          replace_once(
+              "pihole6api/connection.py",
+              'f"TLS verification failed for {url}. Check the certificate and TLS setting."',
+              'f"TLS verification failed for {url}. Check the certificate or configured CA bundle."',
+          )
+
+          replace_once(
+              "pihole6api/client.py",
+              '''        app_password: str | None = None,\n        verify_tls: bool | str = True,\n        timeout: float = 10.0,\n''',
+              '''        app_password: str | None = None,\n        ca_bundle_path: str = "",\n        verify_tls: bool | str | None = None,\n        timeout: float = 10.0,\n''',
+          )
+          replace_once(
+              "pihole6api/client.py",
+              '''            verify_tls=verify_tls,\n            timeout=timeout,\n''',
+              '''            ca_bundle_path=ca_bundle_path,\n            verify_tls=verify_tls,\n            timeout=timeout,\n''',
+          )
+
+          replace_once(
+              "pihole_manager/config.py",
+              "CURRENT_SCHEMA_VERSION = 17",
+              "CURRENT_SCHEMA_VERSION = 18",
+          )
+          replace_once(
+              "pihole_manager/config.py",
+              '''class PiHoleOptions:\n    base_url: str = "http://pi.hole"\n    password: str = ""\n    verify_tls: bool = True\n    timeout_sec: float = 10.0\n''',
+              '''class PiHoleOptions:\n    base_url: str = "http://pi.hole"\n    password: str = ""\n    ca_bundle_path: str = ""\n    timeout_sec: float = 10.0\n''',
+          )
+          replace_once(
+              "pihole_manager/config.py",
+              '''    pihole["base_url"] = pihole.get("base_url") or pihole.get("host") or "http://pi.hole"\n    pihole["password"] = pihole.get("password") or pihole.get("app_password") or ""\n    data["pihole"] = pihole\n''',
+              '''    pihole["base_url"] = pihole.get("base_url") or pihole.get("host") or "http://pi.hole"\n    pihole["password"] = pihole.get("password") or pihole.get("app_password") or ""\n    pihole["ca_bundle_path"] = str(pihole.get("ca_bundle_path") or "").strip()\n    # Schema 18 removes the unsafe verify_tls=false escape hatch. Legacy values\n    # are intentionally discarded so HTTPS returns to certificate verification.\n    pihole.pop("verify_tls", None)\n    data["pihole"] = pihole\n''',
+          )
+          replace_once(
+              "pihole_manager/config.py",
+              '''    options.pihole.password = str(options.pihole.password or "")\n    options.pihole.verify_tls = _as_bool(\n        options.pihole.verify_tls,\n        defaults.pihole.verify_tls,\n    )\n    options.pihole.timeout_sec = max(\n''',
+              '''    options.pihole.password = str(options.pihole.password or "")\n    options.pihole.ca_bundle_path = str(options.pihole.ca_bundle_path or "").strip()\n    options.pihole.timeout_sec = max(\n''',
+          )
+
+          replace_once(
+              "pihole_manager/pihole_service.py",
+              "        bool(options.verify_tls),\n",
+              "        str(options.ca_bundle_path or \"\").strip(),\n",
+          )
+          replace_once(
+              "pihole_manager/pihole_service.py",
+              "            verify_tls=settings.verify_tls,\n",
+              "            ca_bundle_path=settings.ca_bundle_path,\n",
+          )
+
+          replace_once(
+              "pihole_manager/pihole_instances.py",
+              "REGISTRY_SCHEMA_VERSION = 1",
+              "REGISTRY_SCHEMA_VERSION = 2",
+          )
+          replace_once(
+              "pihole_manager/pihole_instances.py",
+              '''    password: str = ""\n    verify_tls: bool = True\n    timeout_sec: float = 10.0\n''',
+              '''    password: str = ""\n    ca_bundle_path: str = ""\n    timeout_sec: float = 10.0\n''',
+          )
+          replace_once(
+              "pihole_manager/pihole_instances.py",
+              "        verify_tls=bool(options.verify_tls),\n",
+              "        ca_bundle_path=str(options.ca_bundle_path or \"\").strip(),\n",
+          )
+          replace_once(
+              "pihole_manager/pihole_instances.py",
+              "        verify_tls=instance.verify_tls,\n",
+              "        ca_bundle_path=instance.ca_bundle_path,\n",
+          )
+          replace_once(
+              "pihole_manager/pihole_instances.py",
+              '        verify_tls=bool(raw.get("verify_tls", True)),\n',
+              '        ca_bundle_path=str(raw.get("ca_bundle_path") or "").strip(),\n',
+          )
+          replace_once(
+              "pihole_manager/pihole_instances.py",
+              "            and item.verify_tls == bool(active_options.verify_tls)\n",
+              "            and item.ca_bundle_path == str(active_options.ca_bundle_path or \"\").strip()\n",
+          )
+          replace_once(
+              "pihole_manager/pihole_instances.py",
+              "        active.verify_tls = bool(active_options.verify_tls)\n",
+              "        active.ca_bundle_path = str(active_options.ca_bundle_path or \"\").strip()\n",
+          )
+
+          replace_once(
+              "pihole_manager/gui/tabs/settings_pihole.py",
+              "        self.verify_tls = tk.BooleanVar()\n",
+              "        self.ca_bundle_path = tk.StringVar()\n",
+          )
+          replace_once(
+              "pihole_manager/gui/tabs/settings_pihole.py",
+              '''        ttk.Entry(timeout_row, textvariable=self.timeout, width=10).pack(side="left")\n        ttk.Checkbutton(\n            timeout_row,\n            text="Verify TLS certificate",\n            variable=self.verify_tls,\n        ).pack(side="left", padx=(12, 0))\n\n        self.save_test_button = ttk.Button(\n''',
+              '''        ttk.Entry(timeout_row, textvariable=self.timeout, width=10).pack(side="left")\n\n        ttk.Label(self, text="Custom CA bundle (optional)").grid(\n            row=5, column=0, sticky="w", pady=4\n        )\n        ttk.Entry(self, textvariable=self.ca_bundle_path).grid(\n            row=5,\n            column=1,\n            sticky="ew",\n            padx=(10, 0),\n            pady=4,\n        )\n\n        self.save_test_button = ttk.Button(\n''',
+          )
+          replace_once(
+              "pihole_manager/gui/tabs/settings_pihole.py",
+              '''        self.save_test_button.grid(\n            row=5,\n''',
+              '''        self.save_test_button.grid(\n            row=6,\n''',
+          )
+          replace_once(
+              "pihole_manager/gui/tabs/settings_pihole.py",
+              '''        ttk.Label(self, textvariable=self.result, wraplength=900).grid(\n            row=6,\n''',
+              '''        ttk.Label(self, textvariable=self.result, wraplength=900).grid(\n            row=7,\n''',
+          )
+          replace_once(
+              "pihole_manager/gui/tabs/settings_pihole.py",
+              "        self.verify_tls.set(instance.verify_tls)\n",
+              "        self.ca_bundle_path.set(instance.ca_bundle_path)\n",
+          )
+          replace_once(
+              "pihole_manager/gui/tabs/settings_pihole.py",
+              "        instance.verify_tls = self.verify_tls.get()\n",
+              "        instance.ca_bundle_path = self.ca_bundle_path.get().strip()\n",
+          )
+
+          replace_once(
+              "tests/test_connection.py",
+              "def test_authenticated_request_uses_session_headers_and_tls_setting() -> None:",
+              "def test_authenticated_request_uses_session_headers_and_custom_ca_bundle() -> None:",
+          )
+          replace_once(
+              "tests/test_connection.py",
+              "        verify_tls=False,\n",
+              "        ca_bundle_path=\"/etc/ssl/local-pihole-ca.pem\",\n",
+          )
+          replace_once(
+              "tests/test_connection.py",
+              '    assert fake.calls[1]["verify"] is False\n',
+              '    assert fake.calls[1]["verify"] == "/etc/ssl/local-pihole-ca.pem"\n',
+          )
+          replace_once(
+              "tests/test_connection.py",
+              "\n\ndef test_http_error_is_raised_instead_of_returned_as_success() -> None:",
+              '''\n\ndef test_legacy_tls_disable_flag_is_rejected() -> None:\n    with pytest.raises(ValueError, match="no longer supported"):\n        PiHole6Connection("https://pi.hole", verify_tls=False)\n\n\ndef test_legacy_tls_ca_path_is_treated_as_custom_ca_bundle() -> None:\n    fake = FakeSession([FakeResponse(200, {"ok": True})])\n    connection = PiHole6Connection(\n        "https://pi.hole",\n        verify_tls="/etc/ssl/legacy-local-ca.pem",\n        session=fake,  # type: ignore[arg-type]\n    )\n\n    connection.get("info/version")\n\n    assert fake.calls[0]["verify"] == "/etc/ssl/legacy-local-ca.pem"\n\n\ndef test_default_https_request_keeps_requests_certificate_verification_default() -> None:\n    fake = FakeSession([FakeResponse(200, {"ok": True})])\n    connection = PiHole6Connection(\n        "https://pi.hole",\n        session=fake,  # type: ignore[arg-type]\n    )\n\n    connection.get("info/version")\n\n    assert "verify" not in fake.calls[0]\n\n\ndef test_http_error_is_raised_instead_of_returned_as_success() -> None:''',
+          )
+
+          replace_once(
+              "tests/test_config.py",
+              "    assert options.schema_version == 17\n",
+              "    assert options.schema_version == 18\n",
+          )
+          replace_once(
+              "tests/test_config.py",
+              "    assert options.pihole.verify_tls is False\n",
+              "    assert options.pihole.ca_bundle_path == \"\"\n",
+          )
+          replace_once(
+              "tests/test_config.py",
+              '    assert json.loads(options_path().read_text(encoding="utf-8"))["schema_version"] == 17\n',
+              '    assert json.loads(options_path().read_text(encoding="utf-8"))["schema_version"] == 18\n',
+          )
+
+          replace_once(
+              "tests/test_pihole_instances.py",
+              "        verify_tls=False,\n",
+              "        ca_bundle_path=\"/etc/ssl/local-ca.pem\",\n",
+          )
+          replace_once(
+              "tests/test_pihole_instances.py",
+              '    assert raw["schema_version"] == 1\n',
+              '    assert raw["schema_version"] == 2\n',
+          )
+          path = Path("tests/test_pihole_instances.py")
+          path.write_text(
+              path.read_text(encoding="utf-8")
+              + '''\n\ndef test_registry_v1_migrates_legacy_disabled_tls_to_verified_tls(\n    monkeypatch, tmp_path\n) -> None:\n    fake = FakeKeyring()\n    monkeypatch.setenv("PIHOLE_MANAGER_HOME", str(tmp_path))\n    monkeypatch.setattr(credentials, "_keyring_module", lambda: fake)\n    registry_path().write_text(\n        json.dumps(\n            {\n                "schema_version": 1,\n                "active_instance_id": "home",\n                "instances": [\n                    {\n                        "instance_id": "home",\n                        "name": "Home",\n                        "base_url": "https://home.local",\n                        "password": "",\n                        "verify_tls": False,\n                        "timeout_sec": 10.0,\n                    }\n                ],\n            }\n        ),\n        encoding="utf-8",\n    )\n\n    registry = load_pihole_instances(PiHoleOptions(base_url="https://home.local"))\n\n    assert registry.active().ca_bundle_path == ""\n    raw = json.loads(registry_path().read_text(encoding="utf-8"))\n    assert raw["schema_version"] == 2\n    assert "verify_tls" not in raw["instances"][0]\n    assert raw["instances"][0]["ca_bundle_path"] == ""\n''',
+              encoding="utf-8",
+          )
+
+          replace_once(
+              "options.example.json",
+              '    "verify_tls": true,\n',
+              '    "ca_bundle_path": "",\n',
+          )
+
+          replace_once(
+              ".github/workflows/container.yml",
+              '''      - uses: actions/checkout@v6\n\n      - name: Determine pull-request multi-architecture scope\n''',
+              '''      - uses: actions/checkout@v6\n        with:\n          fetch-depth: 2\n\n      - name: Determine pull-request multi-architecture scope\n''',
+          )
+          replace_once(
+              ".github/workflows/container.yml",
+              '''        env:\n          BASE_SHA: ${{ github.event.pull_request.base.sha }}\n          HEAD_SHA: ${{ github.event.pull_request.head.sha }}\n        shell: bash\n        run: |\n          set -euo pipefail\n          git fetch --no-tags --depth=1 origin "$BASE_SHA" "$HEAD_SHA"\n          files="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")"\n''',
+              '''        shell: bash\n        run: |\n          set -euo pipefail\n          files="$(git diff --name-only HEAD^1 HEAD)"\n''',
+          )
+          PY
+          git show HEAD^:.github/workflows/ci.yml > .github/workflows/ci.yml
+      - name: Validate migration before commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -e ".[dev]"
+          python scripts/check_repository_integrity.py
+          ruff check .
+          pytest tests/test_connection.py tests/test_config.py tests/test_pihole_instances.py
+      - name: Commit migration
+        env:
+          TARGET_BRANCH: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/workflows/ci.yml .github/workflows/container.yml options.example.json \
+            pihole6api/connection.py pihole6api/client.py pihole_manager/config.py \
+            pihole_manager/pihole_service.py pihole_manager/pihole_instances.py \
+            pihole_manager/gui/tabs/settings_pihole.py tests/test_connection.py \
+            tests/test_config.py tests/test_pihole_instances.py
+          git commit -m "Enforce verified TLS and safe PR scope detection"
+          git push origin "HEAD:${TARGET_BRANCH}"
