@@ -290,10 +290,9 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add .github/workflows/ci.yml .github/workflows/container.yml options.example.json \
-            pihole6api/connection.py pihole6api/client.py pihole_manager/config.py \
-            pihole_manager/pihole_service.py pihole_manager/pihole_instances.py \
-            pihole_manager/gui/tabs/settings_pihole.py tests/test_connection.py \
-            tests/test_config.py tests/test_pihole_instances.py
-          git commit -m "Enforce verified TLS and safe PR scope detection"
+          git add options.example.json pihole6api/connection.py pihole6api/client.py \
+            pihole_manager/config.py pihole_manager/pihole_service.py \
+            pihole_manager/pihole_instances.py pihole_manager/gui/tabs/settings_pihole.py \
+            tests/test_connection.py tests/test_config.py tests/test_pihole_instances.py
+          git commit -m "Enforce verified TLS configuration"
           git push origin "HEAD:${TARGET_BRANCH}"
