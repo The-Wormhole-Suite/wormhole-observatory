@@ -7,12 +7,19 @@
 ## Priority 0: Framework audit recovery gate
 - [x] establish a clean recovery baseline from the last verified release-candidate tree, excluding the transport-corrupted commits from the canonical path
 - [x] reconcile the recovery baseline with current `main`, preserving completed roadmap work while incorporating the transactional migration runner
-- [ ] fix any Ruff/test failures exposed by the reconciled tree and require green Python CI before further feature work
-- [ ] verify every previously completed roadmap item still has implementation plus test/release evidence after reconciliation; do not trust checkbox state alone
-- [ ] rerun the full security and release-candidate gates on the reconciled canonical branch: Python CI, Pi-hole v6 integration, CodeQL, dependency review, reproducible desktop builds, container amd64/arm64 verification, signing/provenance checks
-- [ ] establish one canonical integration branch and retire or supersede stranded long-lived implementation branches so completed work cannot diverge silently from `main`
+- [x] fix any Ruff/test failures exposed by the reconciled tree and require green Python CI before further feature work
+- [x] verify every previously completed roadmap item still has implementation plus test/release evidence after reconciliation; do not trust checkbox state alone
+- [x] rerun the full security and release-candidate gates on the reconciled canonical branch: Python CI, Pi-hole v6 integration, CodeQL, dependency review, reproducible desktop builds, container amd64/arm64 verification, signing/provenance checks
+- [x] establish one canonical integration branch and retire or supersede stranded long-lived implementation branches so completed work cannot diverge silently from `main`
 - [x] add a lightweight repository-integrity CI guard for sentinel placeholders and unexpectedly tiny critical workflow/source files
-- [ ] keep the explicit repository license and first public v0.3.6 release-candidate gate as release blockers
+- [x] keep the first public v0.3.6 tag blocked until an explicit repository license is selected and the final release-candidate gate is green
+
+### Recovery evidence (2026-09-01)
+- canonical recovery PR: #41; superseded corrupted integration PR: #38
+- Python compatibility: 3.11, 3.12, and 3.13 full test matrix
+- Pi-hole compatibility: FTL 6.3, 6.5, and 6.6 integration matrix
+- release trust: Windows/Linux byte-for-byte reproducibility, Sigstore verification, provenance/attestation, and amd64/arm64 container verification
+- security: CodeQL Python/Actions and dependency review clean; third-party workflow actions pinned to immutable SHAs
 
 ## Priority 1: Stability and migration
 - [x] operating-system credential stores
@@ -77,4 +84,4 @@
 - [x] enforce dependency review for pull requests that change dependencies
 - [x] add CodeQL scanning for Python and GitHub Actions workflows
 - [x] audit public README, contribution guidance, and release documentation
-- [ ] run the complete release-candidate gate before creating the first public v0.3.6 tag
+- [x] run the complete release-candidate gate before creating the first public v0.3.6 tag
