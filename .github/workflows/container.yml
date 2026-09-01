@@ -37,12 +37,13 @@ jobs:
         id: scope
         if: github.event_name == 'pull_request'
         env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         shell: bash
         run: |
           set -euo pipefail
-          files="$(gh pr diff "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --name-only)"
+          git fetch --no-tags --depth=1 origin "$BASE_SHA" "$HEAD_SHA"
+          files="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")"
           if printf '%s\n' "$files" | grep -Eq \
             '^(\.github/workflows/container\.yml|\.dockerignore|Dockerfile|compose\.yaml|repository\.yaml|wormhole_observatory/|pyproject\.toml|pihole_manager/container_entrypoint\.py)'; then
             echo "multiarch=true" >> "$GITHUB_OUTPUT"
