@@ -37,11 +37,11 @@ def test_legacy_configuration_is_migrated(monkeypatch, tmp_path) -> None:
 
     options = load_options()
 
-    assert options.schema_version == 17
+    assert options.schema_version == 18
     assert options.ui.table_visible_columns["review"][1:3] == ["order", "queued"]
     assert options.pihole.base_url == "https://pi.hole/admin"
     assert options.pihole.password == "application-password"
-    assert options.pihole.verify_tls is False
+    assert options.pihole.ca_bundle_path == ""
     assert options.logging.enabled is False
     assert options.logging.filename == "legacy.log"
     assert options.scans.batch_size == 42
@@ -65,7 +65,7 @@ def test_save_options_is_valid_and_round_trips(monkeypatch, tmp_path) -> None:
     assert loaded.pihole.base_url == "http://dns.local"
     assert loaded.llm.categories == ["tracker"]
     assert loaded.logging.level == "INFO"
-    assert json.loads(options_path().read_text(encoding="utf-8"))["schema_version"] == 17
+    assert json.loads(options_path().read_text(encoding="utf-8"))["schema_version"] == 18
 
 
 def test_legacy_provider_is_migrated_into_both_analysis_pools(

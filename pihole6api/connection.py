@@ -54,14 +54,24 @@ class PiHole6Connection:
         base_url: str,
         password: str = "",
         *,
-        verify_tls: bool | str = True,
+        ca_bundle_path: str = "",
+        verify_tls: bool | str | None = None,
         timeout: float = 10.0,
         max_retries: int = 2,
         session: requests.Session | None = None,
     ) -> None:
         self.base_url = normalize_api_url(base_url)
         self.password = password or ""
-        self.verify_tls = verify_tls
+        if verify_tls is False:
+            raise ValueError(
+                "Disabling TLS certificate verification is no longer supported; "
+                "configure ca_bundle_path for private certificate authorities."
+            )
+        legacy_ca_bundle = verify_tls.strip() if isinstance(verify_tls, str) else ""
+        configured_ca_bundle = str(ca_bundle_path or "").strip()
+        if legacy_ca_bundle and configured_ca_bundle and legacy_ca_bundle != configured_ca_bundle:
+            raise ValueError("Conflicting CA bundle paths were provided")
+        self.ca_bundle_path = configured_ca_bundle or legacy_ca_bundle
         self.timeout = max(1.0, float(timeout))
         self.session_id: str | None = None
         self.csrf_token: str | None = None
@@ -203,21 +213,23 @@ class PiHole6Connection:
         headers = self._headers() if authenticated else {"Accept": "application/json"}
         started = time.perf_counter()
         try:
-            response = self.session.request(
-                method=method,
-                url=url,
-                headers=headers,
-                params=params,
-                json=json_data,
-                files=files,
-                data=form_data,
-                verify=self.verify_tls,
-                timeout=self.timeout,
-            )
+            request_kwargs: dict[str, Any] = {
+                "method": method,
+                "url": url,
+                "headers": headers,
+                "params": params,
+                "json": json_data,
+                "files": files,
+                "data": form_data,
+                "timeout": self.timeout,
+            }
+            if self.ca_bundle_path:
+                request_kwargs["verify"] = self.ca_bundle_path
+            response = self.session.request(**request_kwargs)
         except requests.exceptions.SSLError as exc:
             self._record_failure(ConnectionState.TLS_ERROR, exc)
             raise PiHole6ConnectionError(
-                f"TLS verification failed for {url}. Check the certificate and TLS setting."
+                f"TLS verification failed for {url}. Check the certificate or configured CA bundle."
             ) from exc
         except requests.Timeout as exc:
             self._record_failure(ConnectionState.OFFLINE, exc)

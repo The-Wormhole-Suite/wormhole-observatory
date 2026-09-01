@@ -16,7 +16,7 @@ from pihole_manager.models import AutomationMode, Policy
 
 T = TypeVar("T")
 _CONFIG_LOCK = threading.RLock()
-CURRENT_SCHEMA_VERSION = 17
+CURRENT_SCHEMA_VERSION = 18
 log = logging.getLogger(__name__)
 
 
@@ -60,7 +60,7 @@ class ScanOptions:
 class PiHoleOptions:
     base_url: str = "http://pi.hole"
     password: str = ""
-    verify_tls: bool = True
+    ca_bundle_path: str = ""
     timeout_sec: float = 10.0
 
 
@@ -752,6 +752,10 @@ def _migrate(raw: dict[str, Any]) -> dict[str, Any]:
     pihole = _mapping(data.get("pihole"))
     pihole["base_url"] = pihole.get("base_url") or pihole.get("host") or "http://pi.hole"
     pihole["password"] = pihole.get("password") or pihole.get("app_password") or ""
+    pihole["ca_bundle_path"] = str(pihole.get("ca_bundle_path") or "").strip()
+    # Schema 18 removes the unsafe verify_tls=false escape hatch. Legacy values
+    # are intentionally discarded so HTTPS returns to certificate verification.
+    pihole.pop("verify_tls", None)
     data["pihole"] = pihole
 
     logging_raw = _mapping(data.get("logging"))
@@ -1109,10 +1113,7 @@ def _validate(options: Options) -> Options:
 
     options.pihole.base_url = str(options.pihole.base_url or defaults.pihole.base_url)
     options.pihole.password = str(options.pihole.password or "")
-    options.pihole.verify_tls = _as_bool(
-        options.pihole.verify_tls,
-        defaults.pihole.verify_tls,
-    )
+    options.pihole.ca_bundle_path = str(options.pihole.ca_bundle_path or "").strip()
     options.pihole.timeout_sec = max(
         1.0,
         _as_float(options.pihole.timeout_sec, defaults.pihole.timeout_sec),

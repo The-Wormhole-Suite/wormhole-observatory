@@ -44,7 +44,7 @@ def test_missing_registry_migrates_current_pihole(monkeypatch, tmp_path) -> None
     active = PiHoleOptions(
         base_url="https://home-pihole.local",
         password="home-secret",
-        verify_tls=False,
+        ca_bundle_path="/etc/ssl/local-ca.pem",
         timeout_sec=7.0,
     )
 
@@ -56,7 +56,7 @@ def test_missing_registry_migrates_current_pihole(monkeypatch, tmp_path) -> None
     assert instance.base_url == "https://home-pihole.local"
     assert instance.password == "home-secret"
     raw = json.loads(registry_path().read_text(encoding="utf-8"))
-    assert raw["schema_version"] == 1
+    assert raw["schema_version"] == 2
     assert raw["instances"][0]["password"] == ""
     key = f"pihole-instance/{instance.instance_id}/password"
     assert fake.get_password(credentials.SERVICE_NAME, key) == "home-secret"
@@ -177,3 +177,38 @@ def test_registry_active_selection_recovers_from_interrupted_switch(monkeypatch,
     assert registry.active_instance_id == "home"
     assert registry.instances[1].base_url == "http://office.local"
     assert registry.instances[1].password == "office-secret"
+
+
+def test_registry_v1_migrates_legacy_disabled_tls_to_verified_tls(
+    monkeypatch, tmp_path
+) -> None:
+    fake = FakeKeyring()
+    monkeypatch.setenv("PIHOLE_MANAGER_HOME", str(tmp_path))
+    monkeypatch.setattr(credentials, "_keyring_module", lambda: fake)
+    registry_path().write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "active_instance_id": "home",
+                "instances": [
+                    {
+                        "instance_id": "home",
+                        "name": "Home",
+                        "base_url": "https://home.local",
+                        "password": "",
+                        "verify_tls": False,
+                        "timeout_sec": 10.0,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    registry = load_pihole_instances(PiHoleOptions(base_url="https://home.local"))
+
+    assert registry.active().ca_bundle_path == ""
+    raw = json.loads(registry_path().read_text(encoding="utf-8"))
+    assert raw["schema_version"] == 2
+    assert "verify_tls" not in raw["instances"][0]
+    assert raw["instances"][0]["ca_bundle_path"] == ""

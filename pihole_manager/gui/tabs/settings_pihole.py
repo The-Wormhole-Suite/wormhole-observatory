@@ -39,7 +39,7 @@ class PiHoleSettingsPage(ttk.Frame):
         self.instance_name = tk.StringVar()
         self.base_url = tk.StringVar()
         self.password = tk.StringVar()
-        self.verify_tls = tk.BooleanVar()
+        self.ca_bundle_path = tk.StringVar()
         self.timeout = tk.StringVar()
         self.result = tk.StringVar(value="No connection test performed.")
         self.active_note = tk.StringVar()
@@ -112,11 +112,17 @@ class PiHoleSettingsPage(ttk.Frame):
         timeout_row = ttk.Frame(self)
         timeout_row.grid(row=4, column=1, sticky="w", padx=(10, 0), pady=4)
         ttk.Entry(timeout_row, textvariable=self.timeout, width=10).pack(side="left")
-        ttk.Checkbutton(
-            timeout_row,
-            text="Verify TLS certificate",
-            variable=self.verify_tls,
-        ).pack(side="left", padx=(12, 0))
+
+        ttk.Label(self, text="Custom CA bundle (optional)").grid(
+            row=5, column=0, sticky="w", pady=4
+        )
+        ttk.Entry(self, textvariable=self.ca_bundle_path).grid(
+            row=5,
+            column=1,
+            sticky="ew",
+            padx=(10, 0),
+            pady=4,
+        )
 
         self.save_test_button = ttk.Button(
             self,
@@ -124,7 +130,7 @@ class PiHoleSettingsPage(ttk.Frame):
             command=save_test_command,
         )
         self.save_test_button.grid(
-            row=5,
+            row=6,
             column=1,
             sticky="w",
             padx=(10, 0),
@@ -133,7 +139,7 @@ class PiHoleSettingsPage(ttk.Frame):
         self.save_test_button._skip_auto_save = True  # type: ignore[attr-defined]
 
         ttk.Label(self, textvariable=self.result, wraplength=900).grid(
-            row=6,
+            row=7,
             column=0,
             columnspan=2,
             sticky="w",
@@ -195,7 +201,7 @@ class PiHoleSettingsPage(ttk.Frame):
         self.instance_name.set(instance.name)
         self.base_url.set(instance.base_url)
         self.password.set(instance.password)
-        self.verify_tls.set(instance.verify_tls)
+        self.ca_bundle_path.set(instance.ca_bundle_path)
         self.timeout.set(str(instance.timeout_sec))
         self._refresh_selector(instance_id)
 
@@ -226,7 +232,7 @@ class PiHoleSettingsPage(ttk.Frame):
         instance.name = name
         instance.base_url = base_url
         instance.password = self.password.get()
-        instance.verify_tls = self.verify_tls.get()
+        instance.ca_bundle_path = self.ca_bundle_path.get().strip()
         instance.timeout_sec = timeout
         return True
 

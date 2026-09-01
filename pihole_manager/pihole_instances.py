@@ -17,7 +17,7 @@ from pihole_manager.credentials import (
     _write_secret,
 )
 
-REGISTRY_SCHEMA_VERSION = 1
+REGISTRY_SCHEMA_VERSION = 2
 _REGISTRY_LOCK = threading.RLock()
 
 
@@ -27,7 +27,7 @@ class PiHoleInstance:
     name: str = "Primary Pi-hole"
     base_url: str = "http://pi.hole"
     password: str = ""
-    verify_tls: bool = True
+    ca_bundle_path: str = ""
     timeout_sec: float = 10.0
 
 
@@ -62,7 +62,7 @@ def instance_from_options(
         name=name,
         base_url=str(options.base_url or "http://pi.hole").strip(),
         password=str(options.password or ""),
-        verify_tls=bool(options.verify_tls),
+        ca_bundle_path=str(options.ca_bundle_path or "").strip(),
         timeout_sec=max(1.0, float(options.timeout_sec)),
     )
 
@@ -71,7 +71,7 @@ def options_from_instance(instance: PiHoleInstance) -> PiHoleOptions:
     return PiHoleOptions(
         base_url=instance.base_url,
         password=instance.password,
-        verify_tls=instance.verify_tls,
+        ca_bundle_path=instance.ca_bundle_path,
         timeout_sec=instance.timeout_sec,
     )
 
@@ -96,7 +96,7 @@ def _normalize_instance(raw: dict[str, Any], index: int, used_ids: set[str]) -> 
         name=name,
         base_url=base_url,
         password=str(raw.get("password") or ""),
-        verify_tls=bool(raw.get("verify_tls", True)),
+        ca_bundle_path=str(raw.get("ca_bundle_path") or "").strip(),
         timeout_sec=timeout,
     )
 
@@ -167,7 +167,7 @@ def _read_registry(active_options: PiHoleOptions) -> tuple[PiHoleInstanceRegistr
             item
             for item in instances
             if item.base_url == active_url
-            and item.verify_tls == bool(active_options.verify_tls)
+            and item.ca_bundle_path == str(active_options.ca_bundle_path or "").strip()
             and item.timeout_sec == max(1.0, float(active_options.timeout_sec))
         ),
         None,
@@ -179,7 +179,7 @@ def _read_registry(active_options: PiHoleOptions) -> tuple[PiHoleInstanceRegistr
         active = registry.active()
         active.base_url = active_url or active.base_url
         active.password = str(active_options.password or active.password)
-        active.verify_tls = bool(active_options.verify_tls)
+        active.ca_bundle_path = str(active_options.ca_bundle_path or "").strip()
         active.timeout_sec = max(1.0, float(active_options.timeout_sec))
     return registry, schema_version != REGISTRY_SCHEMA_VERSION
 

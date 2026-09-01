@@ -34,7 +34,7 @@ def _signature(options: PiHoleOptions) -> tuple[Any, ...]:
     return (
         options.base_url.strip(),
         options.password,
-        bool(options.verify_tls),
+        str(options.ca_bundle_path or "").strip(),
         float(options.timeout_sec),
     )
 
@@ -51,7 +51,7 @@ def configure_client(options: PiHoleOptions | None = None) -> PiHole6Client:
         _CLIENT = PiHole6Client(
             base_url=settings.base_url,
             password=settings.password,
-            verify_tls=settings.verify_tls,
+            ca_bundle_path=settings.ca_bundle_path,
             timeout=settings.timeout_sec,
         )
         _CLIENT_SIGNATURE = signature

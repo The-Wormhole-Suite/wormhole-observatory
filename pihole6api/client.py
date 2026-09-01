@@ -21,7 +21,8 @@ class PiHole6Client:
         password: str = "",
         *,
         app_password: str | None = None,
-        verify_tls: bool | str = True,
+        ca_bundle_path: str = "",
+        verify_tls: bool | str | None = None,
         timeout: float = 10.0,
         max_retries: int = 2,
     ) -> None:
@@ -29,6 +30,7 @@ class PiHole6Client:
         self.connection = PiHole6Connection(
             base_url,
             credential,
+            ca_bundle_path=ca_bundle_path,
             verify_tls=verify_tls,
             timeout=timeout,
             max_retries=max_retries,
