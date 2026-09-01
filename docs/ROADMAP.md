@@ -1,5 +1,15 @@
 # Roadmap
 
+## Priority 0: Framework audit recovery gate
+- [ ] restore all `PLACEHOLDER_RESTORE_FROM_REPO_REQUIRED` casualties on the integration branch, including release/container workflows and affected Pi-hole UI/service/test files, from their last verified implementations
+- [ ] fix remaining Ruff violations in the restored connection and multi-instance code, then require green Python CI before any further feature work
+- [ ] reconcile `codex/roadmap-audit-20260819` with current `main`, preserving the completed roadmap implementation while incorporating schema v12 transactional migrations
+- [ ] verify every previously completed roadmap item still has implementation + test/release evidence after reconciliation; do not trust checkbox state alone
+- [ ] rerun the full security and release-candidate gates on the reconciled canonical branch: Python CI, Pi-hole v6 integration, CodeQL, dependency review, reproducible desktop builds, container amd64/arm64 verification, signing/provenance checks
+- [ ] establish one canonical integration branch and retire/merge stranded long-lived implementation branches so completed work cannot diverge silently from `main`
+- [ ] add a lightweight repository-integrity CI guard for sentinel placeholders and unexpectedly tiny critical workflow/source files
+- [ ] keep the explicit repository license and first public v0.3.6 release-candidate gate as release blockers
+
 ## Priority 1: Stability and migration
 - [x] versioned SQLite migrations with rollback tests
 - [x] operating-system credential stores
