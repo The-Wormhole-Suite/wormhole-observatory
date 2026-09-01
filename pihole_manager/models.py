@@ -124,3 +124,4 @@ class ConnectionTestResult:
     elapsed_ms: int
     summary: str
     version: str = ""
+    state: str = "unknown"

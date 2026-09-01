@@ -11,6 +11,8 @@ from pihole_manager.analysis_dispatcher import (
     AnalysisUnavailableError,
     dispatch_analysis,
 )
+from pihole_manager.cancellation import CancellationToken, OperationCancelledError
+from pihole_manager.compatibility_profiles import apply_compatibility_profile
 from pihole_manager.config import (
     LLMOptions,
     LLMProviderOptions,
@@ -23,6 +25,7 @@ from pihole_manager.database import (
     domain_observation_summary,
     get_domain_lock,
     get_state,
+    manual_tags,
     queue_domains_needing_analysis,
     queue_due_rechecks,
     record_discovered_domains,
@@ -189,6 +192,30 @@ class Classifier(ManagedWorker):
         super().__init__(f"LLMClassifier-{normalized_pool}")
         self.pool_id = normalized_pool
         self._notifier = Notifier()
+        self._active_job_lock = threading.RLock()
+        self._active_cancel_token: CancellationToken | None = None
+
+    def stop(self) -> None:
+        super().stop()
+        self.cancel_active_job()
+
+    def cancel_active_job(self) -> bool:
+        with self._active_job_lock:
+            if self._active_cancel_token is None:
+                return False
+            self._active_cancel_token.cancel()
+            return True
+
+    def _begin_job(self) -> CancellationToken:
+        token = CancellationToken(self._stop_event)
+        with self._active_job_lock:
+            self._active_cancel_token = token
+        return token
+
+    def _finish_job(self, token: CancellationToken) -> None:
+        with self._active_job_lock:
+            if self._active_cancel_token is token:
+                self._active_cancel_token = None
 
     def run(self) -> None:
         staging_requeue_processing(pool_id=self.pool_id)
@@ -228,7 +255,7 @@ class Classifier(ManagedWorker):
 
             if self._stop_event.is_set():
                 for domain in domains:
-                    staging_fail(domain, "Classifier stopped before processing")
+                    staging_defer(domain, "Classifier stopped before processing", time.time())
                 break
             unlocked_domains = []
             for domain in domains:
@@ -239,14 +266,19 @@ class Classifier(ManagedWorker):
                     unlocked_domains.append(domain)
             if not unlocked_domains:
                 continue
+            cancel_token = self._begin_job()
             try:
-                dossiers = self._build_dossiers(unlocked_domains)
+                dossiers = self._build_dossiers(
+                    unlocked_domains,
+                    cancel_token=cancel_token,
+                )
                 result = dispatch_analysis(
                     self.pool_id,
                     unlocked_domains,
                     dossiers,
                     options=options,
                     source="queue",
+                    cancel_token=cancel_token,
                 )
                 completed = self._handle_dispatch_result(
                     result,
@@ -273,6 +305,12 @@ class Classifier(ManagedWorker):
                             "No provider returned a classification.",
                             max_attempts=1,
                         )
+            except OperationCancelledError:
+                log.info("%s classification cancelled for %s", self.pool_id, unlocked_domains)
+                for domain in unlocked_domains:
+                    staging_defer(domain, "Classification cancelled", time.time())
+                if self._stop_event.is_set():
+                    break
             except AnalysisUnavailableError as exc:
                 log.warning(
                     "%s classification deferred for %s: %s",
@@ -294,6 +332,8 @@ class Classifier(ManagedWorker):
                 )
                 for domain in unlocked_domains:
                     staging_fail(domain, str(exc), max_attempts=1)
+            finally:
+                self._finish_job(cancel_token)
         log.info("%s LLM classifier stopped", self.pool_id)
 
     def _handle_dispatch_result(
@@ -369,8 +409,13 @@ class Classifier(ManagedWorker):
     def _build_dossier(self, domain: str) -> dict:
         return self._build_dossiers([domain])[0]
 
-    def _build_dossiers(self, domains: list[str]) -> list[dict]:
-        findings_by_domain = research_many(domains)
+    def _build_dossiers(
+        self,
+        domains: list[str],
+        *,
+        cancel_token: CancellationToken | None = None,
+    ) -> list[dict]:
+        findings_by_domain = research_many(domains, cancel_token=cancel_token)
         return [
             {
                 "domain": domain,
@@ -424,10 +469,12 @@ class Classifier(ManagedWorker):
                 or ("Manually queued for review." if manual_review_requested else "")
             ),
         )
+        classification = apply_compatibility_profile(classification)
+        policy_classification = apply_manual_tag_override(classification)
         research_data = dossier.get("research") or {}
         decision_evidence_count = int(research_data.get("decision_relevant_count") or 0)
         decision = resolve_automatic_decision(
-            classification,
+            policy_classification,
             evidence_count=decision_evidence_count,
             llm_options=selected_options.llm,
         )
@@ -519,6 +566,13 @@ class AutomaticActionDecision:
     review_reason: str = ""
 
 
+def apply_manual_tag_override(classification: Classification) -> Classification:
+    override_tags = manual_tags(classification.domain)
+    if not override_tags:
+        return classification
+    return replace(classification, tags=tuple(override_tags))
+
+
 def resolve_automatic_decision(
     classification: Classification,
     *,
@@ -564,13 +618,14 @@ def resolve_automatic_decision(
             "Invalid default policy for tag(s): " + ", ".join(sorted(invalid_tags)),
         )
 
-    manual_tags = [
+    manual_review_tags = [
         tag for tag, policy in policies_by_tag.items() if policy == Policy.MANUAL_REVIEW.value
     ]
-    if manual_tags:
+    if manual_review_tags:
         return AutomaticActionDecision(
             None,
-            "Manual review is required by tag policy: " + ", ".join(sorted(manual_tags)),
+            "Manual review is required by tag policy: "
+            + ", ".join(sorted(manual_review_tags)),
         )
 
     actionable = {policy for policy in policies_by_tag.values()}
@@ -659,6 +714,19 @@ def get_classifier() -> Classifier:
                 _CLASSIFIERS[pool_id] = worker
                 worker.start()
         return _CLASSIFIERS["background"]
+
+
+def cancel_classifier_jobs(pool_id: str = "") -> int:
+    normalized = pool_id.strip().lower()
+    if normalized and normalized not in {"realtime", "background"}:
+        raise ValueError(f"Unsupported analysis pool: {pool_id}")
+    with _WORKER_LOCK:
+        workers = [
+            worker
+            for worker_id, worker in _CLASSIFIERS.items()
+            if not normalized or worker_id == normalized
+        ]
+        return sum(1 for worker in workers if worker.cancel_active_job())
 
 
 def stop_workers(timeout: float = 5.0) -> None:

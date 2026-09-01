@@ -6,8 +6,11 @@ from pihole6api.errors import (
     PiHole6Error,
     PiHole6HTTPError,
 )
+from pihole6api.health import ConnectionHealth, ConnectionState
 
 __all__ = [
+    "ConnectionHealth",
+    "ConnectionState",
     "PiHole6AuthenticationError",
     "PiHole6Client",
     "PiHole6Connection",

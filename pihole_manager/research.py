@@ -3,19 +3,36 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable
-from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from typing import Any
 
 import requests
 
+from pihole_manager.cancellation import (
+    CancellationToken,
+    OperationCancelledError,
+    cancel_pending,
+    raise_if_cancelled,
+)
+from pihole_manager.compatibility_profiles import (
+    COMPATIBILITY_PROVIDER_NAME,
+    compatibility_finding,
+)
 from pihole_manager.config import ResearchProviderOptions, load_options
 from pihole_manager.database import (
     get_domain_lock,
     research_findings_get,
     save_research_findings,
 )
+from pihole_manager.evidence_quality import (
+    annotate_source_kind,
+    detect_contradictions,
+    quality_summary,
+    score_finding,
+)
 from pihole_manager.models import ResearchFinding
+from pihole_manager.repository_lists import research_repository_lists
 from pihole_manager.research_catalogs import (
     research_adguard_services,
     research_disconnect_tracking,
@@ -25,6 +42,7 @@ from pihole_manager.research_common import (
     ResearchError,
     normalize_domain,
     provider_snapshot,
+    redact_provider_text,
     register_provider_failure,
     register_provider_success,
 )
@@ -38,6 +56,9 @@ from pihole_manager.research_lookups import (
     research_urlscan,
     research_virustotal,
 )
+from pihole_manager.research_reputation import research_crtsh, research_google_safe_browsing
+from pihole_manager.research_urlhaus import research_urlhaus
+from pihole_manager.service_graph import service_dependency_graph
 
 log = logging.getLogger(__name__)
 _MAX_PROMPT_FINDINGS = 12
@@ -71,6 +92,10 @@ _TEST_DOMAINS = {
     "phishtank": "example.com",
     "urlscan": "google.com",
     "cloudflare_radar": "google.com",
+    "repository_lists": "example.com",
+    "urlhaus": "example.com",
+    "crtsh": "example.com",
+    "google_safe_browsing": "testsafebrowsing.appspot.com",
 }
 
 _PROVIDER_HANDLERS: dict[
@@ -88,6 +113,10 @@ _PROVIDER_HANDLERS: dict[
     "phishtank": research_phishtank,
     "urlscan": research_urlscan,
     "cloudflare_radar": research_cloudflare_radar,
+    "repository_lists": research_repository_lists,
+    "urlhaus": research_urlhaus,
+    "crtsh": research_crtsh,
+    "google_safe_browsing": research_google_safe_browsing,
 }
 
 
@@ -102,7 +131,10 @@ def test_research_provider(
         domain or provider.test_domain or _TEST_DOMAINS.get(provider.kind, "example.com")
     )
     definition = provider_snapshot(provider)
-    requires_key = bool(definition.get("requires_api_key"))
+    requires_key = (
+        bool(definition.get("requires_api_key"))
+        or provider.kind == "google_safe_browsing"
+    )
     if skip_api_key_sources and requires_key:
         return EvidenceSourceTestResult(
             provider=provider.name,
@@ -140,7 +172,7 @@ def test_research_provider(
             status="fail",
             finding_count=0,
             elapsed_ms=int((time.monotonic() - started) * 1000),
-            summary=_test_error_summary(exc),
+            summary=_test_error_summary(exc, provider),
         )
     visible = [item for item in findings if item.raw_data.get("include_in_prompt", True)]
     first = visible[0] if visible else findings[0] if findings else None
@@ -161,8 +193,8 @@ def test_research_provider(
     )
 
 
-def _test_error_summary(exc: Exception) -> str:
-    text = str(exc).strip().replace("\n", " ")
+def _test_error_summary(exc: Exception, provider: ResearchProviderOptions) -> str:
+    text = redact_provider_text(exc, provider).strip().replace("\n", " ")
     lowered = text.lower()
     if "failed to resolve" in lowered or "nameresolutionerror" in lowered:
         return "DNS resolution failed for the source host."
@@ -175,18 +207,29 @@ def _test_error_summary(exc: Exception) -> str:
     return text[:500] or exc.__class__.__name__
 
 
-def research_domain(domain: str, *, force: bool = False) -> list[ResearchFinding]:
+def research_domain(
+    domain: str,
+    *,
+    force: bool = False,
+    cancel_token: CancellationToken | None = None,
+) -> list[ResearchFinding]:
     normalized = normalize_domain(domain)
     if not normalized:
         raise ValueError("domain must not be empty")
-    return research_many([normalized], force=force).get(normalized, [])
+    return research_many(
+        [normalized],
+        force=force,
+        cancel_token=cancel_token,
+    ).get(normalized, [])
 
 
 def research_many(
     domains: list[str],
     *,
     force: bool = False,
+    cancel_token: CancellationToken | None = None,
 ) -> dict[str, list[ResearchFinding]]:
+    raise_if_cancelled(cancel_token)
     normalized_domains = list(
         dict.fromkeys(normalized for value in domains if (normalized := normalize_domain(value)))
     )
@@ -195,17 +238,28 @@ def research_many(
         return output
 
     cached_by_domain: dict[str, list[ResearchFinding]] = {}
+    local_findings: list[ResearchFinding] = []
     locked_domains: list[str] = []
     for domain in normalized_domains:
+        raise_if_cancelled(cancel_token)
         cached = [
             _finding_from_row(row)
             for row in research_findings_get(domain, fresh_only=True, limit=500)
         ]
+        cached = [
+            finding for finding in cached if finding.provider != COMPATIBILITY_PROVIDER_NAME
+        ]
+        local_finding = compatibility_finding(domain)
+        if local_finding is not None:
+            cached.append(local_finding)
+            local_findings.append(local_finding)
         cached_by_domain[domain] = cached
         if get_domain_lock(domain) is not None:
             locked_domains.append(domain)
-            output[domain] = cached
-        elif not force:
+            output[domain] = list(cached)
+        elif force:
+            output[domain] = [local_finding] if local_finding is not None else []
+        else:
             output[domain] = list(cached)
 
     if force and locked_domains:
@@ -213,6 +267,9 @@ def research_many(
             "Protected domain(s) cannot be refreshed. Unlock it before refreshing evidence: "
             + ", ".join(locked_domains)
         )
+
+    if local_findings:
+        save_research_findings(local_findings, default_max_age_days=365)
 
     options = load_options()
     providers = [provider for provider in options.research_providers if provider.enabled]
@@ -222,6 +279,7 @@ def research_many(
     pending: list[tuple[str, int, ResearchProviderOptions]] = []
     locked = set(locked_domains)
     for domain in normalized_domains:
+        raise_if_cancelled(cancel_token)
         if domain in locked:
             continue
         cached_providers = (
@@ -245,32 +303,53 @@ def research_many(
         tuple[str, ResearchProviderOptions],
     ] = {}
     collected: list[ResearchFinding] = []
+    cancelled = False
     try:
         for domain, provider_index, provider in pending:
+            raise_if_cancelled(cancel_token)
             future = executors[provider_index].submit(
                 _run_provider_with_retries,
                 domain,
                 provider,
+                cancel_token,
             )
             futures[future] = (domain, provider)
 
-        for future in as_completed(futures):
-            domain, provider = futures[future]
-            try:
-                selected = future.result()[: provider.max_results]
-            except Exception as exc:
-                log.warning(
-                    "Evidence source %s failed for %s: %s",
-                    provider.name,
-                    domain,
-                    exc,
-                )
-                continue
-            output[domain].extend(selected)
-            collected.extend(selected)
+        remaining = set(futures)
+        while remaining:
+            raise_if_cancelled(cancel_token)
+            done, remaining = wait(
+                remaining,
+                timeout=0.2,
+                return_when=FIRST_COMPLETED,
+            )
+            raise_if_cancelled(cancel_token)
+            for future in done:
+                domain, provider = futures[future]
+                try:
+                    selected = [
+                        annotate_source_kind(item, provider.kind)
+                        for item in future.result()[: provider.max_results]
+                    ]
+                except OperationCancelledError:
+                    raise
+                except Exception as exc:
+                    log.warning(
+                        "Evidence source %s failed for %s: %s",
+                        provider.name,
+                        domain,
+                        redact_provider_text(exc, provider),
+                    )
+                    continue
+                output[domain].extend(selected)
+                collected.extend(selected)
+    except OperationCancelledError:
+        cancelled = True
+        cancel_pending(futures)
+        raise
     finally:
         for executor in executors:
-            executor.shutdown(wait=True, cancel_futures=False)
+            executor.shutdown(wait=True, cancel_futures=cancelled)
 
     if collected:
         save_research_findings(
@@ -300,16 +379,24 @@ def research_context(
     visible.sort(
         key=lambda item: (
             not item.decision_relevant,
+            -score_finding(item).evidence_score,
             -float(item.confidence),
             -int(item.retrieved_at),
         )
     )
+    contradictions = detect_contradictions(visible)
     prompt_findings = visible[:_MAX_PROMPT_FINDINGS]
     return {
         "domain": normalized,
         "finding_count": len(visible),
         "decision_relevant_count": sum(1 for item in visible if item.decision_relevant),
         "omitted_count": max(0, len(visible) - len(prompt_findings)),
+        "quality": quality_summary(visible, contradictions),
+        "contradictions": [item.as_dict() for item in contradictions],
+        "service_graph": service_dependency_graph(
+            normalized,
+            findings=visible,
+        ).prompt_context(),
         "findings": [_compact_finding(item) for item in prompt_findings],
     }
 
@@ -327,9 +414,11 @@ def _run_provider(
 def _run_provider_with_retries(
     domain: str,
     provider: ResearchProviderOptions,
+    cancel_token: CancellationToken | None = None,
 ) -> list[ResearchFinding]:
     attempts = max(1, load_options().llm.max_retries + 1)
     for attempt in range(attempts):
+        raise_if_cancelled(cancel_token)
         try:
             findings = _run_provider(domain, provider)
         except requests.HTTPError as exc:
@@ -345,12 +434,14 @@ def _run_provider_with_retries(
             if attempt + 1 >= attempts:
                 raise
         else:
+            raise_if_cancelled(cancel_token)
             register_provider_success(provider)
             return findings
     raise RuntimeError(f"Evidence source {provider.name} exhausted its retries")
 
 
 def _compact_finding(item: ResearchFinding) -> dict[str, Any]:
+    quality = score_finding(item)
     return {
         "provider": item.provider,
         "kind": item.kind,
@@ -361,6 +452,9 @@ def _compact_finding(item: ResearchFinding) -> dict[str, Any]:
         "summary": item.summary[:_MAX_SUMMARY_LENGTH],
         "source_url": item.source_url,
         "confidence": round(float(item.confidence), 3),
+        "source_quality": round(quality.source_score, 3),
+        "evidence_quality": round(quality.evidence_score, 3),
+        "quality_tier": quality.tier,
         "retrieved_at": item.retrieved_at,
     }
 

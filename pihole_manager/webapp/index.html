@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#111827">
+  <meta name="color-scheme" content="light dark">
+  <title>Wormhole Observatory Review</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/app/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/app/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">Wormhole Observatory</p>
+      <h1>Review Queue</h1>
+    </div>
+    <div id="connectionState" class="status-pill" data-state="locked">Locked</div>
+  </header>
+
+  <main>
+    <section id="authPanel" class="panel auth-panel" aria-labelledby="authTitle">
+      <div>
+        <h2 id="authTitle">Connect to the local review API</h2>
+        <p>Enter the bearer token configured in Wormhole Observatory. It stays in this browser session only.</p>
+      </div>
+      <form id="authForm" class="auth-form">
+        <label for="token">API token</label>
+        <div class="input-row">
+          <input id="token" name="token" type="password" autocomplete="off" required>
+          <button type="submit">Connect</button>
+        </div>
+        <p id="authError" class="error" role="alert"></p>
+      </form>
+    </section>
+
+    <section id="reviewPanel" class="review-shell" hidden>
+      <div class="toolbar panel">
+        <div class="search-wrap">
+          <label for="search">Filter queue</label>
+          <input id="search" type="search" placeholder="Domain, tag, service…">
+        </div>
+        <div class="toolbar-actions">
+          <button id="refresh" type="button">Refresh</button>
+          <button id="disconnect" type="button" class="secondary">Disconnect</button>
+        </div>
+      </div>
+
+      <div class="queue-meta">
+        <p id="summary">No queue data loaded.</p>
+        <p id="updatedAt"></p>
+      </div>
+
+      <section id="reviews" class="review-grid" aria-live="polite"></section>
+      <div id="emptyState" class="panel empty-state" hidden>
+        <h2>No matching review items</h2>
+        <p>The queue may be empty, or the current filter has no matches.</p>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="detailDialog" class="detail-dialog">
+    <form method="dialog" class="dialog-header">
+      <div>
+        <p class="eyebrow">Domain review</p>
+        <h2 id="detailDomain">Domain</h2>
+      </div>
+      <button class="secondary" value="close" aria-label="Close details">Close</button>
+    </form>
+    <div id="detailBody" class="detail-body"></div>
+  </dialog>
+
+  <noscript>This review client requires JavaScript.</noscript>
+  <script src="/app/app.js" defer></script>
+  <script src="/app/deep-link.js" defer></script>
+</body>
+</html>

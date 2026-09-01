@@ -7,6 +7,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from tkinter import messagebox, ttk
 
 from pihole_manager.analysis_dispatcher import benchmark_domain
+from pihole_manager.cancellation import CancellationToken, OperationCancelledError
 from pihole_manager.config import (
     Options,
     ProviderPoolMembershipOptions,
@@ -30,6 +31,7 @@ class AnalysisPoolsSettingsPage(TooltipSupport, ttk.Frame):
         self.index = 0
         self._provider_choices: dict[str, str] = {}
         self._benchmark_provider_ids: list[str] = []
+        self._benchmark_cancel_token: CancellationToken | None = None
 
         self.columnconfigure(1, weight=1)
         self.rowconfigure(0, weight=1)
@@ -195,6 +197,13 @@ class AnalysisPoolsSettingsPage(TooltipSupport, ttk.Frame):
             command=self._start_benchmark,
         )
         self.benchmark_button.grid(row=0, column=2)
+        self.benchmark_cancel_button = ttk.Button(
+            benchmark,
+            text="Cancel",
+            command=self._cancel_benchmark,
+            state="disabled",
+        )
+        self.benchmark_cancel_button.grid(row=0, column=3, padx=(6, 0))
         self.benchmark_providers = tk.Listbox(
             benchmark,
             selectmode="extended",
@@ -204,7 +213,7 @@ class AnalysisPoolsSettingsPage(TooltipSupport, ttk.Frame):
         self.benchmark_providers.grid(
             row=1,
             column=0,
-            columnspan=3,
+            columnspan=4,
             sticky="ew",
             pady=(7, 0),
         )
@@ -227,12 +236,12 @@ class AnalysisPoolsSettingsPage(TooltipSupport, ttk.Frame):
         self.benchmark_results.grid(
             row=2,
             column=0,
-            columnspan=3,
+            columnspan=4,
             sticky="ew",
             pady=(7, 0),
         )
         self.benchmark_status = ttk.Label(benchmark, text="")
-        self.benchmark_status.grid(row=3, column=0, columnspan=3, sticky="w", pady=(5, 0))
+        self.benchmark_status.grid(row=3, column=0, columnspan=4, sticky="w", pady=(5, 0))
 
     @staticmethod
     def _entry(
@@ -461,6 +470,9 @@ class AnalysisPoolsSettingsPage(TooltipSupport, ttk.Frame):
             self.benchmark_providers.selection_set(0, "end")
 
     def _start_benchmark(self) -> None:
+        if self._benchmark_cancel_token is not None:
+            self.benchmark_status.configure(text="A benchmark is already running.")
+            return
         if self.options is None or not self._store_current_pool():
             return
         domain = self.benchmark_domain.get().strip().lower().rstrip(".")
@@ -472,7 +484,10 @@ class AnalysisPoolsSettingsPage(TooltipSupport, ttk.Frame):
         if not provider_ids:
             messagebox.showerror("Provider benchmark", "Select at least one provider.")
             return
+        token = CancellationToken()
+        self._benchmark_cancel_token = token
         self.benchmark_button.state(["disabled"])
+        self.benchmark_cancel_button.state(["!disabled"])
         self.benchmark_status.configure(text="Building one dossier and running providers …")
         self.benchmark_results.delete(*self.benchmark_results.get_children())
         options = copy.deepcopy(self.options)
@@ -483,8 +498,11 @@ class AnalysisPoolsSettingsPage(TooltipSupport, ttk.Frame):
             provider_ids,
             pool_id,
             options,
+            token,
         )
-        future.add_done_callback(lambda item: self.after(0, self._benchmark_finished, item))
+        future.add_done_callback(
+            lambda item: self.after(0, self._benchmark_finished, item, token)
+        )
 
     def _benchmark_worker(
         self,
@@ -492,8 +510,9 @@ class AnalysisPoolsSettingsPage(TooltipSupport, ttk.Frame):
         provider_ids: list[str],
         pool_id: str,
         options: Options,
+        cancel_token: CancellationToken,
     ) -> dict:
-        findings = research_many([domain])
+        findings = research_many([domain], cancel_token=cancel_token)
         dossier = {
             "domain": domain,
             "query_context": domain_observation_summary(domain),
@@ -506,16 +525,35 @@ class AnalysisPoolsSettingsPage(TooltipSupport, ttk.Frame):
             provider_ids,
             pool_id=pool_id,
             options=options,
+            cancel_token=cancel_token,
         )
         result = benchmark_run_get(run_id)
         if result is None:
             raise RuntimeError("Benchmark result could not be loaded.")
         return result
 
-    def _benchmark_finished(self, future: Future) -> None:
+    def _cancel_benchmark(self) -> None:
+        self.cancel_active_work()
+
+    def cancel_active_work(self, *, notify: bool = True) -> bool:
+        token = self._benchmark_cancel_token
+        if token is None:
+            return False
+        token.cancel()
+        if notify:
+            self.benchmark_status.configure(text="Cancelling benchmark …")
+        return True
+
+    def _benchmark_finished(self, future: Future, token: CancellationToken) -> None:
+        if self._benchmark_cancel_token is token:
+            self._benchmark_cancel_token = None
         self.benchmark_button.state(["!disabled"])
+        self.benchmark_cancel_button.state(["disabled"])
         try:
             result = future.result()
+        except OperationCancelledError:
+            self.benchmark_status.configure(text="Benchmark cancelled")
+            return
         except Exception as exc:
             self.benchmark_status.configure(text=f"Benchmark failed: {exc}")
             return

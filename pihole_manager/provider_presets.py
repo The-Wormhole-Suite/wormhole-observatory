@@ -33,6 +33,19 @@ _PRESETS = (
         notes="Official OpenAI API. Use Fetch models to select an available model.",
     ),
     ProviderPreset(
+        "openai_web_search",
+        "OpenAI (Responses + Web Search)",
+        "openai_responses_web_search",
+        "https://api.openai.com/v1",
+        structured_output="prompt_only",
+        max_tokens_parameter="max_output_tokens",
+        send_temperature=False,
+        notes=(
+            "Uses OpenAI's Responses API with native web search and captures URL citations. "
+            "Web search can incur separate provider tool charges."
+        ),
+    ),
+    ProviderPreset(
         "anthropic",
         "Anthropic Claude",
         "anthropic_messages",

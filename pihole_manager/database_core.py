@@ -12,7 +12,8 @@ from typing import Any
 from pihole_manager.config import database_path, load_options
 
 _DB_LOCK = threading.RLock()
-DATABASE_SCHEMA_VERSION = 11
+DATABASE_SCHEMA_VERSION = 12
+LEGACY_SCHEMA_BASELINE_VERSION = 7
 
 
 @contextmanager
@@ -32,8 +33,38 @@ def _connection():
         connection.close()
 
 
+@contextmanager
+def _schema_transaction(connection: sqlite3.Connection):
+    """Keep schema creation and every migration in one rollback boundary."""
+
+    savepoint = "schema_initialization"
+    connection.execute(f"SAVEPOINT {savepoint}")
+    try:
+        yield
+    except Exception:
+        connection.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+        connection.execute(f"RELEASE SAVEPOINT {savepoint}")
+        raise
+    else:
+        connection.execute(f"RELEASE SAVEPOINT {savepoint}")
+
+
+def _execute_statements(connection: sqlite3.Connection, script: str) -> None:
+    """Execute a static SQL script without sqlite3.executescript's implicit COMMIT."""
+
+    pending: list[str] = []
+    for line in script.splitlines():
+        pending.append(line)
+        statement = "\n".join(pending).strip()
+        if statement and sqlite3.complete_statement(statement):
+            connection.execute(statement)
+            pending.clear()
+    if "\n".join(pending).strip():
+        raise RuntimeError("The database schema script contains an incomplete statement.")
+
+
 def init_db() -> None:
-    with _DB_LOCK, _connection() as connection:
+    with _DB_LOCK, _connection() as connection, _schema_transaction(connection):
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS schema_meta (
@@ -48,7 +79,8 @@ def init_db() -> None:
                 "The database was created by a newer Pi-hole Manager version "
                 f"(schema {existing_version}; supported up to {DATABASE_SCHEMA_VERSION})."
             )
-        connection.executescript(
+        _execute_statements(
+            connection,
             """
             CREATE TABLE IF NOT EXISTS staging_domains (
                 domain TEXT PRIMARY KEY,
@@ -279,6 +311,7 @@ def init_db() -> None:
                 dossier_json TEXT NOT NULL,
                 dossier_hash TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'running',
+                error TEXT NOT NULL DEFAULT '',
                 created_at INTEGER NOT NULL,
                 completed_at INTEGER
             );
@@ -303,18 +336,7 @@ def init_db() -> None:
                 ON model_benchmark_results(run_id, id);
             """
         )
-        _migrate_staging_table(connection)
-        _migrate_review_table(connection)
-        _migrate_classification_table(connection)
-        _migrate_research_table(connection)
-        _migrate_quota_tables(connection)
-        connection.execute(
-            """
-            INSERT INTO schema_meta(key, value) VALUES ('schema_version', ?)
-            ON CONFLICT(key) DO UPDATE SET value = excluded.value
-            """,
-            (str(DATABASE_SCHEMA_VERSION),),
-        )
+        _run_schema_migrations(connection, existing_version)
 
 
 def _existing_schema_version(connection: sqlite3.Connection) -> int:
@@ -330,6 +352,47 @@ def _existing_schema_version(connection: sqlite3.Connection) -> int:
     if version < 0:
         raise RuntimeError("The database schema version is invalid.")
     return version
+
+
+
+
+def _set_schema_version(connection: sqlite3.Connection, version: int) -> None:
+    connection.execute(
+        """
+        INSERT INTO schema_meta(key, value) VALUES ('schema_version', ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        """,
+        (str(version),),
+    )
+
+
+def _run_schema_migrations(
+    connection: sqlite3.Connection,
+    existing_version: int,
+) -> None:
+    # Schema versions up to 7 predate the explicit migration registry. Treat
+    # them as one compatibility baseline and migrate forward from version 8.
+    current_version = max(existing_version, LEGACY_SCHEMA_BASELINE_VERSION)
+    if current_version >= DATABASE_SCHEMA_VERSION:
+        return
+
+    for target_version in range(current_version + 1, DATABASE_SCHEMA_VERSION + 1):
+        migration = SCHEMA_MIGRATIONS.get(target_version)
+        if migration is None:
+            raise RuntimeError(
+                f"Missing database migration for schema version {target_version}."
+            )
+
+        savepoint = f"schema_migration_{target_version}"
+        connection.execute(f"SAVEPOINT {savepoint}")
+        try:
+            migration(connection)
+            _set_schema_version(connection, target_version)
+            connection.execute(f"RELEASE SAVEPOINT {savepoint}")
+        except Exception:
+            connection.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+            connection.execute(f"RELEASE SAVEPOINT {savepoint}")
+            raise
 
 
 def _migrate_staging_table(connection: sqlite3.Connection) -> None:
@@ -463,6 +526,43 @@ def _migrate_review_table(connection: sqlite3.Connection) -> None:
             WHERE COALESCE(categories, '') = ''
             """
         )
+
+
+def _migration_8(connection: sqlite3.Connection) -> None:
+    _migrate_staging_table(connection)
+
+
+def _migration_9(connection: sqlite3.Connection) -> None:
+    _migrate_review_table(connection)
+
+
+def _migration_10(connection: sqlite3.Connection) -> None:
+    _migrate_classification_table(connection)
+    _migrate_research_table(connection)
+
+
+def _migration_11(connection: sqlite3.Connection) -> None:
+    _migrate_quota_tables(connection)
+
+
+def _migration_12(connection: sqlite3.Connection) -> None:
+    columns = {
+        str(row["name"]): row
+        for row in connection.execute("PRAGMA table_info(model_benchmark_runs)")
+    }
+    if "error" not in columns:
+        connection.execute(
+            "ALTER TABLE model_benchmark_runs ADD COLUMN error TEXT NOT NULL DEFAULT ''"
+        )
+
+
+SCHEMA_MIGRATIONS = {
+    8: _migration_8,
+    9: _migration_9,
+    10: _migration_10,
+    11: _migration_11,
+    12: _migration_12,
+}
 
 
 def _normalize_domain(domain: str) -> str:

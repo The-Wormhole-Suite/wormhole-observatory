@@ -10,6 +10,7 @@ from pihole_manager.gui.scrollable import ScrollableFrame
 from pihole_manager.gui.tabs.settings_analysis_pools import AnalysisPoolsSettingsPage
 from pihole_manager.gui.tabs.settings_application import ApplicationSettingsPage
 from pihole_manager.gui.tabs.settings_automation import AutomationSettingsPage
+from pihole_manager.gui.tabs.settings_notifications import NotificationsSettingsPage
 from pihole_manager.gui.tabs.settings_pihole import PiHoleSettingsPage
 from pihole_manager.gui.tabs.settings_profiles import ProfilesSettingsPage
 from pihole_manager.gui.tabs.settings_providers import ProvidersSettingsPage
@@ -56,6 +57,7 @@ class SettingsTab(ttk.Frame):
             ("Prompt Profiles", ProfilesSettingsPage),
             ("Evidence Sources", ResearchSettingsPage),
             ("Application", ApplicationSettingsPage),
+            ("Notifications", NotificationsSettingsPage),
         )
         self.pages: list[ttk.Frame] = []
         self.page_wrappers: list[ScrollableFrame] = []
@@ -89,6 +91,10 @@ class SettingsTab(ttk.Frame):
         enabled = self.options.ui.show_tooltips
         self._set_tooltips_enabled(enabled)
         self.after_idle(self._set_tooltips_enabled, enabled)
+
+    def cancel_active_work(self, *, notify: bool = True) -> bool:
+        cancel = getattr(self.analysis_pools_page, "cancel_active_work", None)
+        return bool(cancel(notify=notify)) if callable(cancel) else False
 
     def _set_tooltips_enabled(self, enabled: bool) -> None:
         for page in self.pages:

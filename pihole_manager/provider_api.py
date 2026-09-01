@@ -8,6 +8,11 @@ from typing import Any
 
 import requests
 
+from pihole_manager.cancellation import (
+    CancellationToken,
+    OperationCancelledError,
+    raise_if_cancelled,
+)
 from pihole_manager.config import LLMOptions, LLMProviderOptions, load_options
 from pihole_manager.http_retry import retry_delay_from_headers
 from pihole_manager.models import ProviderUsage
@@ -54,11 +59,21 @@ class ProviderRequestContext:
 
 
 @dataclass(frozen=True, slots=True)
+class ProviderCitation:
+    url: str
+    title: str = ""
+    start_index: int = -1
+    end_index: int = -1
+
+
+@dataclass(frozen=True, slots=True)
 class ProviderResponse:
     text: str
     usage: ProviderUsage
     latency_ms: int
     headers: Mapping[str, str]
+    citations: tuple[ProviderCitation, ...] = ()
+    web_search_used: bool = False
 
 
 def _append_path(base_url: str, path: str) -> str:
@@ -78,6 +93,10 @@ def chat_url(provider: LLMProviderOptions) -> str:
     if provider.api_style == "anthropic_messages":
         return _append_path(provider.base_url, "messages")
     return _append_path(provider.base_url, "chat/completions")
+
+
+def responses_url(provider: LLMProviderOptions) -> str:
+    return _append_path(provider.base_url, "responses")
 
 
 def models_url(provider: LLMProviderOptions) -> str:
@@ -114,12 +133,14 @@ def request_provider_text(
     *,
     response_format: dict[str, Any] | None = None,
     request_context: ProviderRequestContext | None = None,
+    cancel_token: CancellationToken | None = None,
 ) -> str:
     return request_provider(
         provider,
         messages,
         response_format=response_format,
         request_context=request_context,
+        cancel_token=cancel_token,
     ).text
 
 
@@ -129,13 +150,29 @@ def request_provider(
     *,
     response_format: dict[str, Any] | None = None,
     request_context: ProviderRequestContext | None = None,
+    cancel_token: CancellationToken | None = None,
 ) -> ProviderResponse:
+    raise_if_cancelled(cancel_token)
     started_at = time.monotonic()
-    if provider.api_style == "anthropic_messages":
+    citations: tuple[ProviderCitation, ...] = ()
+    web_search_used = False
+    if provider.api_style == "openai_responses_web_search":
+        response = _request_openai_responses_web_search(
+            provider,
+            messages,
+            request_context=request_context,
+            cancel_token=cancel_token,
+        )
+        data = response.json()
+        text = _extract_openai_responses_text(data)
+        citations = _extract_openai_responses_citations(data)
+        web_search_used = _openai_responses_used_web_search(data)
+    elif provider.api_style == "anthropic_messages":
         response = _request_anthropic(
             provider,
             messages,
             request_context=request_context,
+            cancel_token=cancel_token,
         )
         data = response.json()
         text = _extract_anthropic_text(data)
@@ -145,6 +182,7 @@ def request_provider(
             messages,
             response_format=response_format,
             request_context=request_context,
+            cancel_token=cancel_token,
         )
         data = response.json()
         text = _extract_openai_text(data)
@@ -153,7 +191,73 @@ def request_provider(
         usage=_extract_provider_usage(data),
         latency_ms=max(0, round((time.monotonic() - started_at) * 1000)),
         headers={str(key): str(value) for key, value in getattr(response, "headers", {}).items()},
+        citations=citations,
+        web_search_used=web_search_used,
     )
+
+
+_NATIVE_BROWSING_DISABLED_PROMPT = (
+    "Pi-hole Manager does not currently invoke provider-specific web-search tools. Never "
+    "claim to have searched the web when browsing is not available."
+)
+_NATIVE_BROWSING_ENABLED_PROMPT = (
+    "Provider-native web search is enabled for this request. Use it when useful, prefer "
+    "primary sources, and preserve source URLs/citations in the response when available."
+)
+
+
+def _request_openai_responses_web_search(
+    provider: LLMProviderOptions,
+    messages: Sequence[Mapping[str, str]],
+    *,
+    request_context: ProviderRequestContext | None,
+    cancel_token: CancellationToken | None,
+) -> requests.Response:
+    payload: dict[str, Any] = {
+        "model": provider.model,
+        "input": _native_browsing_messages(messages),
+        "tools": [{"type": "web_search"}],
+        "max_output_tokens": max(1, int(provider.max_output_tokens)),
+        "store": False,
+    }
+    if provider.send_temperature:
+        payload["temperature"] = float(provider.temperature)
+    return _request_with_retries(
+        provider,
+        requests.post,
+        responses_url(provider),
+        json=payload,
+        headers=_headers(provider),
+        request_context=request_context,
+        cancel_token=cancel_token,
+    )
+
+
+def _native_browsing_messages(
+    messages: Sequence[Mapping[str, str]],
+) -> list[dict[str, str]]:
+    result: list[dict[str, str]] = []
+    browsing_instruction_added = False
+    for item in messages:
+        message = {str(key): str(value) for key, value in item.items()}
+        if message.get("role") == "system" and not browsing_instruction_added:
+            content = message.get("content", "")
+            if _NATIVE_BROWSING_DISABLED_PROMPT in content:
+                content = content.replace(
+                    _NATIVE_BROWSING_DISABLED_PROMPT,
+                    _NATIVE_BROWSING_ENABLED_PROMPT,
+                )
+            else:
+                content = f"{content}\n\n{_NATIVE_BROWSING_ENABLED_PROMPT}".strip()
+            message["content"] = content
+            browsing_instruction_added = True
+        result.append(message)
+    if not browsing_instruction_added:
+        result.insert(
+            0,
+            {"role": "system", "content": _NATIVE_BROWSING_ENABLED_PROMPT},
+        )
+    return result
 
 
 def _request_openai_compatible(
@@ -162,6 +266,7 @@ def _request_openai_compatible(
     *,
     response_format: dict[str, Any] | None,
     request_context: ProviderRequestContext | None,
+    cancel_token: CancellationToken | None,
 ) -> requests.Response:
     payload: dict[str, Any] = {
         "model": provider.model,
@@ -180,6 +285,7 @@ def _request_openai_compatible(
         json=payload,
         headers=_headers(provider),
         request_context=request_context,
+        cancel_token=cancel_token,
     )
     return response
 
@@ -189,6 +295,7 @@ def _request_anthropic(
     messages: Sequence[Mapping[str, str]],
     *,
     request_context: ProviderRequestContext | None,
+    cancel_token: CancellationToken | None,
 ) -> requests.Response:
     system_parts = [
         str(item.get("content") or "") for item in messages if item.get("role") == "system"
@@ -214,6 +321,7 @@ def _request_anthropic(
         json=payload,
         headers=_headers(provider),
         request_context=request_context,
+        cancel_token=cancel_token,
     )
     return response
 
@@ -224,6 +332,7 @@ def _request_with_retries(
     url: str,
     *,
     request_context: ProviderRequestContext | None = None,
+    cancel_token: CancellationToken | None = None,
     **kwargs: Any,
 ) -> requests.Response:
     options = request_context.llm_options if request_context is not None else load_options().llm
@@ -232,7 +341,12 @@ def _request_with_retries(
     last_error: Exception | None = None
 
     for attempt in range(attempts):
-        _wait_for_request_slot(provider, options.min_request_interval_sec)
+        raise_if_cancelled(cancel_token)
+        _wait_for_request_slot(
+            provider,
+            options.min_request_interval_sec,
+            cancel_token=cancel_token,
+        )
         reservation = None
         if request_context is not None:
             reservation = wait_for_quota(
@@ -241,12 +355,19 @@ def _request_with_retries(
                 request_context.estimate,
                 pool_id=request_context.pool_id,
                 llm_options=request_context.llm_options,
+                cancel_token=cancel_token,
             )
         try:
+            raise_if_cancelled(cancel_token)
             response = request(url, **kwargs)
-        except (requests.ConnectionError, requests.Timeout) as exc:
-            if reservation is not None and request_context is not None:
+        except OperationCancelledError:
+            if reservation is not None:
                 cancel_quota(reservation)
+            raise
+        except (requests.ConnectionError, requests.Timeout) as exc:
+            if reservation is not None:
+                cancel_quota(reservation)
+            raise_if_cancelled(cancel_token)
             last_error = exc
             _register_transient_failure(provider, attempt)
             if attempt + 1 >= attempts:
@@ -266,6 +387,7 @@ def _request_with_retries(
                     response_headers=getattr(response, "headers", {}),
                 )
             delay = _register_response_failure(provider, response, attempt)
+            raise_if_cancelled(cancel_token)
             if attempt + 1 < attempts:
                 continue
             if status_code == 429:
@@ -297,6 +419,7 @@ def _request_with_retries(
                 profile=request_context.profile,
                 response_headers=getattr(response, "headers", {}),
             )
+        raise_if_cancelled(cancel_token)
         _register_success(provider)
         return response
 
@@ -305,7 +428,12 @@ def _request_with_retries(
     raise RuntimeError("Provider request failed without a response")
 
 
-def _wait_for_request_slot(provider: LLMProviderOptions, configured_minimum: float) -> None:
+def _wait_for_request_slot(
+    provider: LLMProviderOptions,
+    configured_minimum: float,
+    *,
+    cancel_token: CancellationToken | None = None,
+) -> None:
     key = _provider_key(provider)
     base_interval = max(0.0, float(configured_minimum))
     while True:
@@ -317,7 +445,10 @@ def _wait_for_request_slot(provider: LLMProviderOptions, configured_minimum: flo
                 interval = max(base_interval, state.adaptive_interval)
                 state.next_request_at = now + interval
                 return
-        time.sleep(delay)
+        if cancel_token is None:
+            time.sleep(delay)
+        elif cancel_token.wait(delay):
+            cancel_token.raise_if_cancelled()
 
 
 def _register_transient_failure(provider: LLMProviderOptions, attempt: int) -> float:
@@ -403,6 +534,94 @@ def _headers(provider: LLMProviderOptions) -> dict[str, str]:
     elif provider.api_key:
         headers["Authorization"] = f"Bearer {provider.api_key}"
     return headers
+
+
+def _extract_openai_responses_text(data: Any) -> str:
+    if not isinstance(data, dict):
+        raise ValueError("OpenAI Responses response is not a JSON object")
+    output_text = data.get("output_text")
+    if isinstance(output_text, str) and output_text.strip():
+        return output_text.strip()
+    output = data.get("output")
+    if not isinstance(output, list):
+        raise ValueError("OpenAI Responses response contains no output array")
+    parts: list[str] = []
+    for item in output:
+        if not isinstance(item, dict) or item.get("type") != "message":
+            continue
+        content = item.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "output_text":
+                continue
+            text = str(block.get("text") or "").strip()
+            if text:
+                parts.append(text)
+    text = "\n".join(parts).strip()
+    if not text:
+        raise ValueError("OpenAI Responses response contains no output text")
+    return text
+
+
+def _extract_openai_responses_citations(data: Any) -> tuple[ProviderCitation, ...]:
+    if not isinstance(data, dict):
+        return ()
+    output = data.get("output")
+    if not isinstance(output, list):
+        return ()
+    citations: list[ProviderCitation] = []
+    seen: set[tuple[str, str, int, int]] = set()
+    for item in output:
+        if not isinstance(item, dict) or item.get("type") != "message":
+            continue
+        content = item.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "output_text":
+                continue
+            annotations = block.get("annotations")
+            if not isinstance(annotations, list):
+                continue
+            for annotation in annotations:
+                if not isinstance(annotation, dict) or annotation.get("type") != "url_citation":
+                    continue
+                url = str(annotation.get("url") or "").strip()
+                if not url:
+                    continue
+                title = str(annotation.get("title") or "").strip()
+                start_index = _citation_index(annotation.get("start_index"))
+                end_index = _citation_index(annotation.get("end_index"))
+                key = (url, title, start_index, end_index)
+                if key in seen:
+                    continue
+                seen.add(key)
+                citations.append(
+                    ProviderCitation(
+                        url=url,
+                        title=title,
+                        start_index=start_index,
+                        end_index=end_index,
+                    )
+                )
+    return tuple(citations)
+
+
+def _citation_index(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return -1
+
+
+def _openai_responses_used_web_search(data: Any) -> bool:
+    if not isinstance(data, dict):
+        return False
+    output = data.get("output")
+    return isinstance(output, list) and any(
+        isinstance(item, dict) and item.get("type") == "web_search_call" for item in output
+    )
 
 
 def _extract_openai_text(data: Any) -> str:

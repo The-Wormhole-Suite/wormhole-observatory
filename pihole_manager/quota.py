@@ -11,6 +11,7 @@ from typing import Any
 from urllib.parse import urlparse
 from uuid import uuid4
 
+from pihole_manager.cancellation import CancellationToken, raise_if_cancelled
 from pihole_manager.config import LLMOptions, LLMProviderOptions, database_path
 from pihole_manager.database_core import _DB_LOCK, _connection, init_db
 from pihole_manager.http_retry import retry_delay_from_headers
@@ -251,9 +252,11 @@ def wait_for_quota(
     *,
     pool_id: str,
     llm_options: LLMOptions,
+    cancel_token: CancellationToken | None = None,
 ) -> QuotaReservation:
     deadline = time.monotonic() + max(0.0, float(llm_options.quota_wait_timeout_sec))
     while True:
+        raise_if_cancelled(cancel_token)
         try:
             return reserve_quota(
                 provider,
@@ -267,7 +270,10 @@ def wait_for_quota(
             delay = min(exc.wait_seconds, remaining)
             if delay <= 0:
                 raise
-            time.sleep(delay)
+            if cancel_token is None:
+                time.sleep(delay)
+            elif cancel_token.wait(delay):
+                cancel_token.raise_if_cancelled()
 
 
 def complete_quota(

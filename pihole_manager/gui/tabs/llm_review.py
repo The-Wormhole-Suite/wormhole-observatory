@@ -7,6 +7,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from tkinter import filedialog, messagebox, ttk
 from typing import Any
 
+from pihole_manager.cancellation import CancellationToken, OperationCancelledError
 from pihole_manager.database import (
     get_domain_lock,
     mark_action_applied,
@@ -25,6 +26,7 @@ from pihole_manager.gui.tree_sorting import TreeSortController
 from pihole_manager.models import Policy
 from pihole_manager.pihole_service import add_exact_domain
 from pihole_manager.research import research_many
+from pihole_manager.workers import cancel_classifier_jobs
 
 _COLUMNS = (
     "selected",
@@ -71,6 +73,7 @@ class LLMReviewTab(ttk.Frame):
         self.executor = executor
         self._rows: dict[str, dict[str, Any]] = {}
         self._checked: set[str] = set()
+        self._evidence_cancel_token: CancellationToken | None = None
         self.status = tk.StringVar()
         self._build_ui()
         self.reload_preferences()
@@ -87,6 +90,11 @@ class LLMReviewTab(ttk.Frame):
             toolbar,
             text="Collect evidence",
             command=self._collect_selected_evidence,
+        ).pack(side="left", padx=(6, 0))
+        ttk.Button(
+            toolbar,
+            text="Cancel active",
+            command=self._cancel_active_work,
         ).pack(side="left", padx=(6, 0))
         ttk.Button(toolbar, text="Apply planned", command=self._apply_planned_selected).pack(
             side="left", padx=(12, 0)
@@ -387,38 +395,71 @@ class LLMReviewTab(ttk.Frame):
         show_domain: str = "",
         queue_domain: str = "",
     ) -> None:
+        if self._evidence_cancel_token is not None:
+            show_toast(self, "Evidence collection is already running.")
+            return
+        token = CancellationToken()
+        self._evidence_cancel_token = token
         self.status.set(f"Collecting evidence for {len(domains)} domain(s) …")
-        future = self.executor.submit(self._collect_evidence, domains)
+        future = self.executor.submit(self._collect_evidence, domains, token)
         future.add_done_callback(
             lambda item: self.after(
                 0,
                 self._evidence_collection_done,
                 item,
+                token,
                 show_domain,
                 queue_domain,
             )
         )
 
     @staticmethod
-    def _collect_evidence(domains: list[str]) -> tuple[int, list[str]]:
+    def _collect_evidence(
+        domains: list[str],
+        cancel_token: CancellationToken,
+    ) -> tuple[int, list[str]]:
         errors: list[str] = []
         unlocked: list[str] = []
         for domain in domains:
+            cancel_token.raise_if_cancelled()
             if get_domain_lock(domain) is not None:
                 errors.append(f"{domain}: protected domain")
             else:
                 unlocked.append(domain)
-        findings = research_many(unlocked, force=True)
+        findings = research_many(unlocked, force=True, cancel_token=cancel_token)
         return sum(len(items) for items in findings.values()), errors
+
+    def _cancel_active_work(self) -> None:
+        self.cancel_active_work()
+
+    def cancel_active_work(self, *, notify: bool = True) -> int:
+        cancelled = cancel_classifier_jobs()
+        if self._evidence_cancel_token is not None:
+            self._evidence_cancel_token.cancel()
+            cancelled += 1
+        if cancelled:
+            self.status.set("Cancelling active analysis/evidence jobs …")
+            if notify:
+                show_toast(self, f"Cancellation requested for {cancelled} active job(s).")
+        elif notify:
+            show_toast(self, "No active analysis or evidence job to cancel.")
+        return cancelled
 
     def _evidence_collection_done(
         self,
         future: Future,
+        token: CancellationToken,
         show_domain: str,
         queue_domain: str,
     ) -> None:
+        if self._evidence_cancel_token is token:
+            self._evidence_cancel_token = None
         try:
             count, errors = future.result()
+        except OperationCancelledError:
+            self.status.set("Evidence collection cancelled")
+            show_toast(self, "Evidence collection cancelled.")
+            return
         except Exception as exc:
             self.status.set("Evidence collection failed")
             show_toast(self, f"Evidence collection failed: {exc}", duration_ms=3500)

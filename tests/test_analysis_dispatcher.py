@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from dataclasses import replace
 
 import pytest
@@ -10,6 +11,7 @@ from pihole_manager.analysis_dispatcher import (
     ProviderPartialAnalysisError,
     dispatch_analysis,
 )
+from pihole_manager.cancellation import CancellationToken, OperationCancelledError
 from pihole_manager.config import (
     AnalysisPoolOptions,
     LLMProviderOptions,
@@ -126,6 +128,68 @@ def test_distribute_sends_each_domain_to_exactly_one_provider(
     assert sorted(returned) == sorted(domains)
     assert len(returned) == len(set(returned))
     assert all(provider_result.is_primary for provider_result in result.provider_results)
+
+
+def test_cancelled_dispatch_waits_for_inflight_provider_before_returning(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("PIHOLE_MANAGER_HOME", str(tmp_path))
+    init_db()
+    options = _options("distribute", roles=("primary",))
+    started = threading.Event()
+    release = threading.Event()
+    errors: list[BaseException] = []
+    calls = 0
+
+    def execute(
+        _pool,
+        candidate,
+        domains,
+        _dossiers,
+        _options,
+        *,
+        is_primary,
+        cancel_token,
+    ):
+        nonlocal calls
+        calls += 1
+        started.set()
+        if not release.wait(5):
+            raise AssertionError("test provider was not released")
+        return _provider_result(candidate, domains, is_primary=is_primary)
+
+    monkeypatch.setattr(analysis_dispatcher, "_execute_provider", execute)
+    token = CancellationToken()
+
+    def run() -> None:
+        try:
+            dispatch_analysis(
+                "background",
+                ["example.com"],
+                [{"domain": "example.com"}],
+                options=options,
+                cancel_token=token,
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    assert started.wait(2)
+    token.cancel()
+    thread.join(0.5)
+    try:
+        assert thread.is_alive(), "cancel returned while the provider request was still running"
+        assert calls == 1
+    finally:
+        release.set()
+        thread.join(2)
+
+    assert not thread.is_alive()
+    assert len(errors) == 1
+    assert isinstance(errors[0], OperationCancelledError)
+    assert calls == 1
 
 
 def test_fallback_only_uses_second_provider_for_operational_failure(

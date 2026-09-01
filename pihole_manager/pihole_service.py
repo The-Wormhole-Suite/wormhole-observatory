@@ -5,10 +5,17 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from pihole6api import PiHole6Client, normalize_api_url
+from pihole6api import (
+    ConnectionHealth,
+    ConnectionState,
+    PiHole6Client,
+    normalize_api_url,
+)
+from pihole_manager.compatibility_profiles import compatibility_match_for_domain
 from pihole_manager.config import PiHoleOptions, load_options
 from pihole_manager.database import get_domain_lock
 from pihole_manager.models import ConnectionTestResult, Policy
+from pihole_manager.pihole_audit import capture_pihole_snapshot, record_pihole_change
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,7 +34,7 @@ def _signature(options: PiHoleOptions) -> tuple[Any, ...]:
     return (
         options.base_url.strip(),
         options.password,
-        bool(options.verify_tls),
+        str(options.ca_bundle_path or "").strip(),
         float(options.timeout_sec),
     )
 
@@ -44,7 +51,7 @@ def configure_client(options: PiHoleOptions | None = None) -> PiHole6Client:
         _CLIENT = PiHole6Client(
             base_url=settings.base_url,
             password=settings.password,
-            verify_tls=settings.verify_tls,
+            ca_bundle_path=settings.ca_bundle_path,
             timeout=settings.timeout_sec,
         )
         _CLIENT_SIGNATURE = signature
@@ -64,22 +71,77 @@ def close_client() -> None:
         _CLIENT_SIGNATURE = None
 
 
+def get_connection_health() -> ConnectionHealth:
+    with _CLIENT_LOCK:
+        if _CLIENT is None:
+            return ConnectionHealth()
+        return _CLIENT.connection.health
+
+
 def test_connection(options: PiHoleOptions | None = None) -> ConnectionTestResult:
     settings = options or load_options().pihole
-    request_url = f"{normalize_api_url(settings.base_url)}info/version"
     started = time.perf_counter()
+    request_url = settings.base_url.strip()
+    client: PiHole6Client | None = None
     try:
+        request_url = f"{normalize_api_url(settings.base_url)}info/version"
         client = configure_client(settings)
         payload = client.ftl_info.get_version()
+        if not isinstance(payload, dict):
+            elapsed_ms = round((time.perf_counter() - started) * 1000)
+            return ConnectionTestResult(
+                False,
+                request_url,
+                elapsed_ms,
+                "Pi-hole returned an incompatible API response.",
+                state=ConnectionState.API_ERROR,
+            )
         elapsed_ms = round((time.perf_counter() - started) * 1000)
         version = _extract_version(payload)
         summary = "Pi-hole v6 API responded successfully"
         if version:
             summary = f"Pi-hole API responded successfully ({version})"
-        return ConnectionTestResult(True, request_url, elapsed_ms, summary, version)
+        return ConnectionTestResult(
+            True,
+            request_url,
+            elapsed_ms,
+            summary,
+            version,
+            str(client.connection.health.state),
+        )
+    except ValueError as exc:
+        elapsed_ms = round((time.perf_counter() - started) * 1000)
+        return ConnectionTestResult(
+            False,
+            request_url,
+            elapsed_ms,
+            f"Pi-hole configuration is invalid: {exc}",
+            state=ConnectionState.INVALID_CONFIG,
+        )
     except Exception as exc:
         elapsed_ms = round((time.perf_counter() - started) * 1000)
-        return ConnectionTestResult(False, request_url, elapsed_ms, str(exc))
+        health = client.connection.health if client is not None else ConnectionHealth()
+        if health.state is ConnectionState.AUTH_ERROR:
+            summary = f"Pi-hole is reachable, but authentication failed: {exc}"
+        elif health.state is ConnectionState.DEGRADED:
+            summary = f"Pi-hole is reachable, but the API is temporarily unavailable: {exc}"
+        elif health.state is ConnectionState.OFFLINE:
+            summary = f"Pi-hole is offline or unreachable: {exc}"
+        elif health.state is ConnectionState.TLS_ERROR:
+            summary = f"Pi-hole TLS verification failed: {exc}"
+        elif health.state is ConnectionState.API_ERROR:
+            summary = f"Pi-hole returned an API error: {exc}"
+        elif health.state is ConnectionState.INVALID_CONFIG:
+            summary = f"Pi-hole configuration is invalid: {exc}"
+        else:
+            summary = str(exc)
+        return ConnectionTestResult(
+            False,
+            request_url,
+            elapsed_ms,
+            summary,
+            state=str(health.state),
+        )
 
 
 def _extract_version(payload: Any) -> str:
@@ -88,15 +150,22 @@ def _extract_version(payload: Any) -> str:
     version = payload.get("version")
     if isinstance(version, str):
         return version
-    if isinstance(version, dict):
-        for key in ("core", "ftl", "web"):
-            item = version.get(key)
-            if isinstance(item, dict):
-                value = item.get("version") or item.get("local")
+    if not isinstance(version, dict):
+        return ""
+
+    for key in ("ftl", "core", "web"):
+        item = version.get(key)
+        if isinstance(item, dict):
+            local = item.get("local")
+            if isinstance(local, dict):
+                value = local.get("version")
                 if value:
                     return str(value)
-            elif item:
-                return str(item)
+            value = item.get("version")
+            if value:
+                return str(value)
+        elif item:
+            return str(item)
     return ""
 
 
@@ -202,7 +271,134 @@ def fetch_exact_domains(domain_type: str) -> list[dict[str, Any]]:
     return output
 
 
-def add_exact_domain(domain: str, policy: Policy | str, comment: str = "") -> Any:
+def fetch_groups() -> list[dict[str, Any]]:
+    payload = get_client().group_management.get_groups()
+    rows = extract_collection(payload, "groups", "data")
+    output: list[dict[str, Any]] = []
+    for row in rows:
+        group_id = row.get("id")
+        name = row.get("name")
+        if group_id is None or name is None:
+            continue
+        try:
+            normalized_id = int(group_id)
+        except (TypeError, ValueError):
+            continue
+        output.append(
+            {
+                "id": normalized_id,
+                "name": str(name),
+                "comment": str(row.get("comment") or ""),
+                "enabled": bool(row.get("enabled", True)),
+            }
+        )
+    return sorted(output, key=lambda item: (str(item["name"]).casefold(), int(item["id"])))
+
+
+def update_exact_domain_groups(
+    domain: str,
+    domain_type: str,
+    groups: list[int],
+    *,
+    comment: str = "",
+    enabled: bool = True,
+) -> Any:
+    if domain_type not in {"allow", "deny"}:
+        raise ValueError("domain_type must be 'allow' or 'deny'")
+    normalized_groups = sorted({int(group_id) for group_id in groups})
+    before = capture_pihole_snapshot("exact_domain", domain_type, domain)
+    result = get_client().domain_management.update_domain(
+        domain=domain,
+        domain_type=domain_type,
+        kind="exact",
+        comment=comment or None,
+        groups=normalized_groups,
+        enabled=bool(enabled),
+    )
+    record_pihole_change(
+        "update",
+        "exact_domain",
+        domain_type,
+        domain,
+        before=before,
+        after={
+            "domain": domain,
+            "type": domain_type,
+            "comment": comment,
+            "groups": normalized_groups,
+            "enabled": bool(enabled),
+        },
+    )
+    return result
+
+
+def fetch_subscribed_lists(list_type: str | None = None) -> list[dict[str, Any]]:
+    if list_type is not None and list_type not in {"allow", "block"}:
+        raise ValueError("list_type must be 'allow', 'block', or None")
+    payload = get_client().list_management.get_lists(list_type)
+    rows = extract_collection(payload, "lists", "data")
+    output: list[dict[str, Any]] = []
+    for row in rows:
+        address = row.get("address") or row.get("url") or row.get("item")
+        if not address:
+            continue
+        output.append(
+            {
+                "address": str(address),
+                "type": str(row.get("type") or list_type or "block"),
+                "comment": str(row.get("comment") or ""),
+                "enabled": bool(row.get("enabled", True)),
+                "groups": row.get("groups") or [],
+                "date_added": row.get("date_added") or row.get("dateAdded") or "",
+                "date_modified": row.get("date_modified") or row.get("dateModified") or "",
+            }
+        )
+    return output
+
+
+def update_subscribed_list_groups(
+    address: str,
+    list_type: str,
+    groups: list[int],
+    *,
+    comment: str = "",
+    enabled: bool = True,
+) -> Any:
+    if list_type not in {"allow", "block"}:
+        raise ValueError("list_type must be 'allow' or 'block'")
+    normalized_groups = sorted({int(group_id) for group_id in groups})
+    before = capture_pihole_snapshot("subscribed_list", list_type, address)
+    result = get_client().list_management.update_list(
+        address=address,
+        list_type=list_type,
+        comment=comment or None,
+        groups=normalized_groups,
+        enabled=bool(enabled),
+    )
+    record_pihole_change(
+        "update",
+        "subscribed_list",
+        list_type,
+        address,
+        before=before,
+        after={
+            "address": address,
+            "type": list_type,
+            "comment": comment,
+            "groups": normalized_groups,
+            "enabled": bool(enabled),
+        },
+    )
+    return result
+
+
+def add_exact_domain(
+    domain: str,
+    policy: Policy | str,
+    comment: str = "",
+    *,
+    compatibility_override: bool = False,
+) -> Any:
     policy_value = policy.value if isinstance(policy, Policy) else str(policy)
     if policy_value not in {Policy.ALLOW.value, Policy.DENY.value}:
         raise ValueError("policy must be allow or deny")
@@ -212,7 +408,18 @@ def add_exact_domain(domain: str, policy: Policy | str, comment: str = "") -> An
             "Domain is protected in the "
             f"{lock['list_type']} list and cannot be added to {policy_value}."
         )
-    return get_client().domain_management.add_domain(
+    compatibility = compatibility_match_for_domain(domain)
+    if (
+        policy_value == Policy.DENY.value
+        and compatibility is not None
+        and not compatibility_override
+    ):
+        raise RuntimeError(
+            f"Domain matches protected compatibility profile '{compatibility.profile.name}' "
+            f"({compatibility.matched_pattern}). Blocking requires an explicit compatibility "
+            f"override. {compatibility.profile.reason}"
+        )
+    result = get_client().domain_management.add_domain(
         domain=domain,
         domain_type=policy_value,
         kind="exact",
@@ -220,6 +427,20 @@ def add_exact_domain(domain: str, policy: Policy | str, comment: str = "") -> An
         groups=None,
         enabled=True,
     )
+    record_pihole_change(
+        "add",
+        "exact_domain",
+        policy_value,
+        domain,
+        after={
+            "domain": domain,
+            "type": policy_value,
+            "comment": comment,
+            "groups": None,
+            "enabled": True,
+        },
+    )
+    return result
 
 
 def delete_exact_domain(domain: str, domain_type: str) -> Any:
@@ -228,4 +449,13 @@ def delete_exact_domain(domain: str, domain_type: str) -> Any:
     lock = get_domain_lock(domain)
     if lock and lock["list_type"] == domain_type:
         raise RuntimeError("Domain is protected and cannot be removed until it is unlocked.")
-    return get_client().domain_management.delete_domain(domain, domain_type, "exact")
+    before = capture_pihole_snapshot("exact_domain", domain_type, domain)
+    result = get_client().domain_management.delete_domain(domain, domain_type, "exact")
+    record_pihole_change(
+        "delete",
+        "exact_domain",
+        domain_type,
+        domain,
+        before=before,
+    )
+    return result

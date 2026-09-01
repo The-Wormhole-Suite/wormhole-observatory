@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import logging
 import tkinter as tk
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -11,12 +12,16 @@ from pihole_manager.database import init_db
 from pihole_manager.gui.tabs.domains import DomainsTab
 from pihole_manager.gui.tabs.history import HistoryTab
 from pihole_manager.gui.tabs.lists import ListsTab
-from pihole_manager.gui.tabs.llm_review import LLMReviewTab
+from pihole_manager.gui.tabs.llm_review_decisions import ReviewDecisionTab
+from pihole_manager.gui.tabs.pihole_audit import PiHoleAuditTab
+from pihole_manager.gui.tabs.pihole_rules import PiHoleRulesTab
 from pihole_manager.gui.tabs.queries import QueriesTab
 from pihole_manager.gui.tabs.settings import SettingsTab
 from pihole_manager.gui.theme import apply_theme
+from pihole_manager.list_audit_worker import get_list_auditor, stop_list_auditor
 from pihole_manager.logging_setup import setup_logging
-from pihole_manager.pihole_service import close_client
+from pihole_manager.network_access import configure_external_trigger, stop_external_trigger
+from pihole_manager.pihole_service import close_client, test_connection
 from pihole_manager.provider_registry import refresh_provider_registry_if_due
 from pihole_manager.workers import (
     get_classifier,
@@ -36,6 +41,9 @@ class App(tk.Tk):
         self.minsize(900, 650)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ui")
+        self._closing = False
+        self._health_check_running = False
+        self._health_after_id: str | None = None
 
         apply_theme(self, options.ui.theme)
         notebook_host = ttk.Frame(self)
@@ -54,22 +62,38 @@ class App(tk.Tk):
         self.simulation_toggle.place(relx=1.0, x=-12, y=3, anchor="ne")
         self._update_simulation_text()
 
+        self.connection_status_text = tk.StringVar(value="Pi-hole: checking …")
+        self.connection_status_label = ttk.Label(
+            notebook_host,
+            textvariable=self.connection_status_text,
+        )
+        self.connection_status_label.place(x=12, y=5, anchor="nw")
+
         self.queries_tab = QueriesTab(notebook, self.executor)
         self.history_tab = HistoryTab(notebook, self.executor)
         self.lists_tab = ListsTab(notebook, self.executor)
+        self.pihole_rules_tab = PiHoleRulesTab(notebook, self.executor)
+        self.pihole_audit_tab = PiHoleAuditTab(
+            notebook, self.executor, on_rollback=self._pihole_rollback_completed
+        )
         self.domains_tab = DomainsTab(notebook, self.executor)
-        self.llm_tab = LLMReviewTab(notebook, self.executor)
+        self.llm_tab = ReviewDecisionTab(notebook, self.executor)
         self.settings_tab = SettingsTab(notebook, self.executor, self._settings_saved)
 
         notebook.add(self.queries_tab, text="Live Queries")
         notebook.add(self.history_tab, text="History Browser")
         notebook.add(self.lists_tab, text="Lists")
+        notebook.add(self.pihole_rules_tab, text="Regex & Subscriptions")
+        notebook.add(self.pihole_audit_tab, text="Audit Log")
         notebook.add(self.domains_tab, text="Domain Database")
         notebook.add(self.llm_tab, text="Review Queue")
         notebook.add(self.settings_tab, text="Settings")
 
         get_scanner()
+        get_list_auditor()
         get_classifier()
+        self._configure_external_trigger(options)
+        self.after(400, self._schedule_health_check)
         if options.provider_registry.auto_update:
             registry_future = self.executor.submit(refresh_provider_registry_if_due)
             registry_future.add_done_callback(self._registry_refresh_finished)
@@ -88,9 +112,73 @@ class App(tk.Tk):
         self.history_tab.reload_preferences()
         self.lists_tab.reload_preferences()
         self.lists_tab.refresh()
+        self.pihole_rules_tab.refresh()
+        self.pihole_audit_tab.refresh()
         self.domains_tab.reload_preferences()
         self.domains_tab.refresh()
         self.llm_tab.reload_preferences()
+        self._configure_external_trigger(options)
+        self._schedule_health_check()
+
+    def _pihole_rollback_completed(self) -> None:
+        self.lists_tab.refresh()
+        self.pihole_rules_tab.refresh()
+
+    @staticmethod
+    def _configure_external_trigger(options) -> None:
+        try:
+            configure_external_trigger(options.external_trigger)
+        except Exception as exc:
+            log.warning("External review trigger could not start: %s", exc)
+
+    def _schedule_health_check(self) -> None:
+        if self._health_after_id is not None:
+            with contextlib.suppress(tk.TclError):
+                self.after_cancel(self._health_after_id)
+            self._health_after_id = None
+        if self._closing or self._health_check_running:
+            return
+        self._health_check_running = True
+        future = self.executor.submit(test_connection)
+        future.add_done_callback(self._health_check_done)
+
+    def _health_check_done(self, future: Future) -> None:
+        if self._closing:
+            return
+        try:
+            self.after(0, self._show_health_result, future)
+        except tk.TclError:
+            return
+
+    def _show_health_result(self, future: Future) -> None:
+        if self._closing:
+            return
+        self._health_check_running = False
+        try:
+            result = future.result()
+        except Exception:
+            self.connection_status_text.set("Pi-hole: status unavailable")
+        else:
+            if result.success:
+                version = f" · {result.version}" if result.version else ""
+                self.connection_status_text.set(
+                    f"Pi-hole: online{version} · {result.elapsed_ms} ms"
+                )
+            elif result.state == "auth_error":
+                self.connection_status_text.set("Pi-hole: authentication failed")
+            elif result.state == "degraded":
+                self.connection_status_text.set("Pi-hole: API degraded")
+            elif result.state == "api_error":
+                self.connection_status_text.set("Pi-hole: API error")
+            elif result.state == "invalid_config":
+                self.connection_status_text.set("Pi-hole: invalid configuration")
+            elif result.state == "tls_error":
+                self.connection_status_text.set("Pi-hole: TLS verification failed")
+            elif result.state == "offline":
+                self.connection_status_text.set("Pi-hole: offline")
+            else:
+                self.connection_status_text.set("Pi-hole: status unavailable")
+        self._health_after_id = self.after(30_000, self._schedule_health_check)
 
     def _toggle_simulation_mode(self) -> None:
         enabled = bool(self.simulation_mode.get())
@@ -112,10 +200,19 @@ class App(tk.Tk):
         self.simulation_text.set(f"Simulation Mode {state}")
 
     def _on_close(self) -> None:
+        self._closing = True
+        if self._health_after_id is not None:
+            with contextlib.suppress(tk.TclError):
+                self.after_cancel(self._health_after_id)
         options = load_options()
         options.ui.window_width = max(self.winfo_width(), 800)
         options.ui.window_height = max(self.winfo_height(), 600)
         save_options(options)
+        self.domains_tab.cancel_active_work(notify=False)
+        self.llm_tab.cancel_active_work(notify=False)
+        self.settings_tab.cancel_active_work(notify=False)
+        stop_external_trigger()
+        stop_list_auditor()
         stop_workers()
         close_client()
         self.executor.shutdown(wait=False, cancel_futures=True)

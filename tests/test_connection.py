@@ -63,7 +63,20 @@ def test_normalize_api_url(value: str, expected: str) -> None:
     assert normalize_api_url(value) == expected
 
 
-def test_authenticated_request_uses_session_headers_and_tls_setting() -> None:
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        "ftp://pi.hole",
+        "https://user:secret@pi.hole",
+    ],
+)
+def test_normalize_api_url_rejects_invalid_or_embedded_credentials(value: str) -> None:
+    with pytest.raises(ValueError):
+        normalize_api_url(value)
+
+
+def test_authenticated_request_uses_session_headers_and_custom_ca_bundle() -> None:
     fake = FakeSession(
         [
             FakeResponse(
@@ -76,7 +89,7 @@ def test_authenticated_request_uses_session_headers_and_tls_setting() -> None:
     connection = PiHole6Connection(
         "https://pi.hole/admin",
         "secret",
-        verify_tls=False,
+        ca_bundle_path="/etc/ssl/local-pihole-ca.pem",
         session=fake,  # type: ignore[arg-type]
     )
 
@@ -87,7 +100,37 @@ def test_authenticated_request_uses_session_headers_and_tls_setting() -> None:
     assert fake.calls[0]["json"] == {"password": "secret"}
     assert fake.calls[1]["headers"]["X-FTL-SID"] == "sid-1"
     assert fake.calls[1]["headers"]["X-FTL-CSRF"] == "csrf-1"
-    assert fake.calls[1]["verify"] is False
+    assert fake.calls[1]["verify"] == "/etc/ssl/local-pihole-ca.pem"
+
+
+def test_legacy_tls_disable_flag_is_rejected() -> None:
+    with pytest.raises(ValueError, match="no longer supported"):
+        PiHole6Connection("https://pi.hole", verify_tls=False)
+
+
+def test_legacy_tls_ca_path_is_treated_as_custom_ca_bundle() -> None:
+    fake = FakeSession([FakeResponse(200, {"ok": True})])
+    connection = PiHole6Connection(
+        "https://pi.hole",
+        verify_tls="/etc/ssl/legacy-local-ca.pem",
+        session=fake,  # type: ignore[arg-type]
+    )
+
+    connection.get("info/version")
+
+    assert fake.calls[0]["verify"] == "/etc/ssl/legacy-local-ca.pem"
+
+
+def test_default_https_request_keeps_requests_certificate_verification_default() -> None:
+    fake = FakeSession([FakeResponse(200, {"ok": True})])
+    connection = PiHole6Connection(
+        "https://pi.hole",
+        session=fake,  # type: ignore[arg-type]
+    )
+
+    connection.get("info/version")
+
+    assert "verify" not in fake.calls[0]
 
 
 def test_http_error_is_raised_instead_of_returned_as_success() -> None:

@@ -31,8 +31,16 @@
   "pihole": {
     "base_url": "http://pi.hole",
     "password": "",
-    "verify_tls": true,
+    "ca_bundle_path": "",
     "timeout_sec": 10.0
+  },
+  "external_trigger": {
+    "enabled": false,
+    "bind_host": "127.0.0.1",
+    "port": 8765,
+    "token": "",
+    "allow_remote": false,
+    "max_domains_per_request": 500
   },
   "llm": {
     "enabled": false,

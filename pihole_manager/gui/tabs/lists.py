@@ -5,6 +5,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from tkinter import messagebox, simpledialog, ttk
 from typing import Any
 
+from pihole_manager.compatibility_profiles import compatibility_match_for_domain
 from pihole_manager.config import load_options, save_options
 from pihole_manager.database import (
     filter_unclassified_domains,
@@ -17,11 +18,12 @@ from pihole_manager.database import (
 from pihole_manager.gui.column_visibility import ColumnVisibilityController
 from pihole_manager.gui.domain_details import show_domain_details
 from pihole_manager.gui.feedback import show_toast
+from pihole_manager.models import Policy
 from pihole_manager.pihole_service import (
     add_exact_domain,
     delete_exact_domain,
     fetch_exact_domains,
-    get_client,
+    update_exact_domain_groups,
 )
 
 _COLUMNS = ("selected", "locked", "domain", "enabled", "comment", "tags", "details")
@@ -321,8 +323,28 @@ class ListsTab(ttk.Frame):
             return
         comment = simpledialog.askstring("Comment", "Optional comment:", parent=self) or ""
         selected_type = self.list_type.get()
+        compatibility_override = False
+        if selected_type == Policy.DENY.value:
+            compatibility = compatibility_match_for_domain(domain)
+            if compatibility is not None:
+                compatibility_override = messagebox.askyesno(
+                    "Protected service",
+                    f"{domain.strip()} matches the protected compatibility profile "
+                    f"'{compatibility.profile.name}'.\n\n"
+                    f"{compatibility.profile.reason}\n\n"
+                    "Block it anyway with an explicit compatibility override?",
+                    parent=self,
+                )
+                if not compatibility_override:
+                    return
         self.status.set("Adding domain …")
-        future = self.executor.submit(add_exact_domain, domain.strip(), selected_type, comment)
+        future = self.executor.submit(
+            add_exact_domain,
+            domain.strip(),
+            selected_type,
+            comment,
+            compatibility_override=compatibility_override,
+        )
         future.add_done_callback(lambda item: self.after(0, self._mutation_done, item))
 
     def _delete_selected(self) -> None:
@@ -417,12 +439,11 @@ class ListsTab(ttk.Frame):
             return
         selected_type = self.list_type.get()
         future = self.executor.submit(
-            get_client().domain_management.update_domain,
+            update_exact_domain_groups,
             domain,
             selected_type,
-            "exact",
+            row.get("groups") or [],
             comment=comment,
-            groups=row.get("groups") or [],
             enabled=bool(row.get("enabled", True)),
         )
         future.add_done_callback(lambda item: self.after(0, self._mutation_done, item))

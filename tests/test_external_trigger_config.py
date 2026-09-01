@@ -1,0 +1,42 @@
+from __future__ import annotations
+
+import json
+
+from pihole_manager import credentials
+from pihole_manager.config import load_options, options_path, save_options
+
+
+class FakeKeyring:
+    def __init__(self) -> None:
+        self.values: dict[tuple[str, str], str] = {}
+
+    def get_password(self, service: str, key: str):
+        return self.values.get((service, key))
+
+    def set_password(self, service: str, key: str, value: str) -> None:
+        self.values[(service, key)] = value
+
+    def delete_password(self, service: str, key: str) -> None:
+        self.values.pop((service, key), None)
+
+
+def test_external_trigger_token_uses_os_credential_store(monkeypatch, tmp_path) -> None:
+    fake = FakeKeyring()
+    monkeypatch.setenv("PIHOLE_MANAGER_HOME", str(tmp_path))
+    monkeypatch.setattr(credentials, "_keyring_module", lambda: fake)
+
+    options = load_options()
+    options.external_trigger.enabled = True
+    options.external_trigger.token = "trigger-secret"
+    save_options(options)
+
+    raw = json.loads(options_path().read_text(encoding="utf-8"))
+    assert raw["external_trigger"]["token"] == ""
+    assert (
+        fake.get_password(credentials.SERVICE_NAME, "external_trigger/token")
+        == "trigger-secret"
+    )
+
+    loaded = load_options()
+    assert loaded.external_trigger.enabled is True
+    assert loaded.external_trigger.token == "trigger-secret"

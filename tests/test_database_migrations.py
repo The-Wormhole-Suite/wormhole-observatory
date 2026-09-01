@@ -20,12 +20,17 @@ def test_versioned_migration_is_recorded_once(monkeypatch, tmp_path) -> None:
         "SELECT value FROM schema_meta WHERE key = 'schema_version'"
     ).fetchone()[0]
     history = connection.execute(
-        "SELECT version, name FROM schema_migrations ORDER BY version"
+        "SELECT version, name, applied_at FROM schema_migrations ORDER BY version"
     ).fetchall()
     connection.close()
 
+    assert migrations.LEGACY_SCHEMA_VERSION == 12
+    assert migrations.DATABASE_SCHEMA_VERSION == 13
     assert version == str(migrations.DATABASE_SCHEMA_VERSION)
-    assert history == [(12, "add migration history")]
+    assert history[0] == (12, "legacy schema baseline (pre-history)", 0)
+    assert history[1][0:2] == (13, "add migration history")
+    assert history[1][2] > 0
+    assert len(history) == 2
 
 
 def test_failed_versioned_migration_rolls_back(monkeypatch, tmp_path) -> None:
@@ -38,15 +43,15 @@ def test_failed_versioned_migration_rolls_back(monkeypatch, tmp_path) -> None:
 
     monkeypatch.setitem(
         migrations._SCHEMA_MIGRATIONS,
-        12,
+        13,
         migrations.SchemaMigration(
-            version=12,
+            version=13,
             name="rollback probe",
             apply=fail_after_schema_change,
         ),
     )
 
-    with pytest.raises(RuntimeError, match="migration 12 .* rolled back"):
+    with pytest.raises(RuntimeError, match="migration 13 .* rolled back"):
         init_db()
 
     connection = sqlite3.connect(path)

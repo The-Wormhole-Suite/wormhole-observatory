@@ -11,17 +11,20 @@ requires-python = ">=3.11"
 dependencies = [
   "requests>=2.31,<3",
   "dnspython>=2.6,<3",
-  "cryptography>=48.0.1,<49",
+  "cryptography>=50.0.0,<51",
+  "keyring>=25,<26",
+  "pywebpush>=2.4,<3",
 ]
 
 [project.optional-dependencies]
 desktop-notifications = ["plyer>=2.1"]
-dev = ["pytest>=8", "ruff>=0.9"]
+dev = ["pytest>=8", "ruff>=0.9", "PyYAML==6.0.3"]
 build = ["pyinstaller>=6,<7"]
 windows-build = ["pyinstaller>=6,<7"]
 
 [project.scripts]
 pihole-manager-cli = "pihole_manager.__main__:main"
+wormhole-observatory-headless = "pihole_manager.headless:main"
 
 [project.gui-scripts]
 pihole-manager = "pihole_manager.__main__:main"
@@ -30,7 +33,7 @@ pihole-manager = "pihole_manager.__main__:main"
 include = ["pihole_manager*", "pihole6api*"]
 
 [tool.setuptools.package-data]
-pihole_manager = ["data/*.json", "data/*.pem"]
+pihole_manager = ["data/*.json", "data/*.pem", "webapp/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

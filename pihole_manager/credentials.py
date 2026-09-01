@@ -1,0 +1,176 @@
+from __future__ import annotations
+
+import logging
+import threading
+from dataclasses import asdict
+from enum import StrEnum
+from typing import Any
+
+log = logging.getLogger(__name__)
+
+SERVICE_NAME = "The Wormhole Suite - Wormhole Observatory"
+_STATE_LOCK = threading.RLock()
+
+
+class CredentialReadState(StrEnum):
+    PRESENT = "present"
+    MISSING = "missing"
+    UNAVAILABLE = "unavailable"
+
+
+_READ_STATES: dict[str, CredentialReadState] = {}
+
+
+def _keyring_module():
+    try:
+        import keyring
+    except ImportError:
+        return None
+    return keyring
+
+
+def _set_read_state(key: str, state: CredentialReadState) -> None:
+    with _STATE_LOCK:
+        _READ_STATES[key] = state
+
+
+def _read_secret(key: str) -> tuple[CredentialReadState, str]:
+    keyring = _keyring_module()
+    if keyring is None:
+        _set_read_state(key, CredentialReadState.UNAVAILABLE)
+        return CredentialReadState.UNAVAILABLE, ""
+    try:
+        value = str(keyring.get_password(SERVICE_NAME, key) or "")
+    except Exception as exc:  # backend failures must not make configuration unreadable
+        log.warning(
+            "Credential store is unavailable while reading credentials (%s)",
+            type(exc).__name__,
+        )
+        _set_read_state(key, CredentialReadState.UNAVAILABLE)
+        return CredentialReadState.UNAVAILABLE, ""
+    state = CredentialReadState.PRESENT if value else CredentialReadState.MISSING
+    _set_read_state(key, state)
+    return state, value
+
+
+def _write_secret(key: str, value: str) -> bool:
+    keyring = _keyring_module()
+    if keyring is None:
+        return False
+    try:
+        keyring.set_password(SERVICE_NAME, key, value)
+        _set_read_state(key, CredentialReadState.PRESENT)
+        return True
+    except Exception as exc:  # keep plaintext as a no-data-loss fallback
+        log.warning(
+            "Credential store is unavailable while writing credentials (%s)",
+            type(exc).__name__,
+        )
+        return False
+
+
+def _delete_secret(key: str) -> bool:
+    with _STATE_LOCK:
+        if _READ_STATES.get(key) is CredentialReadState.UNAVAILABLE:
+            return False
+    keyring = _keyring_module()
+    if keyring is None:
+        return False
+    try:
+        keyring.delete_password(SERVICE_NAME, key)
+        _set_read_state(key, CredentialReadState.MISSING)
+        return True
+    except Exception:
+        # Missing credentials and unavailable delete support are both harmless here.
+        return False
+
+
+def _credential_slots(options: Any):
+    yield "pihole/password", options.pihole, "password"
+    yield "external_trigger/token", options.external_trigger, "token"
+    for provider in options.llm_providers:
+        provider_id = str(provider.provider_id or "").strip()
+        if provider_id:
+            yield f"llm/{provider_id}/api_key", provider, "api_key"
+    for provider in options.research_providers:
+        kind = str(provider.kind or "").strip().lower()
+        if kind:
+            yield f"research/{kind}/api_key", provider, "api_key"
+
+
+def hydrate_credentials(options: Any) -> bool:
+    """Hydrate secrets from the OS store and migrate legacy plaintext secrets.
+
+    Returns True when at least one plaintext credential was successfully copied
+    into the OS credential store and the caller can safely rewrite options.json.
+    """
+
+    migrated = False
+    for key, owner, attribute in _credential_slots(options):
+        plaintext = str(getattr(owner, attribute, "") or "")
+        state, stored = _read_secret(key)
+        if state is CredentialReadState.PRESENT:
+            setattr(owner, attribute, stored)
+            if plaintext:
+                migrated = True
+            continue
+        if state is CredentialReadState.MISSING and plaintext and _write_secret(key, plaintext):
+            migrated = True
+    return migrated
+
+
+def secure_options_payload(options: Any) -> dict[str, Any]:
+    """Return a serializable options payload with stored secrets removed.
+
+    If an OS credential backend is unavailable, a non-empty secret is retained
+    in the payload rather than being silently lost. This preserves compatibility
+    on headless/minimal systems while desktop systems use their native store.
+    """
+
+    payload = asdict(options)
+
+    password = str(options.pihole.password or "")
+    if password:
+        if _write_secret("pihole/password", password):
+            payload["pihole"]["password"] = ""
+    else:
+        _delete_secret("pihole/password")
+        payload["pihole"]["password"] = ""
+
+    trigger_token = str(options.external_trigger.token or "")
+    if trigger_token:
+        if _write_secret("external_trigger/token", trigger_token):
+            payload["external_trigger"]["token"] = ""
+    else:
+        _delete_secret("external_trigger/token")
+        payload["external_trigger"]["token"] = ""
+
+    llm_payload = payload.get("llm_providers", [])
+    for index, provider in enumerate(options.llm_providers):
+        provider_id = str(provider.provider_id or "").strip()
+        api_key = str(provider.api_key or "")
+        if not provider_id:
+            continue
+        key = f"llm/{provider_id}/api_key"
+        if api_key:
+            if _write_secret(key, api_key):
+                llm_payload[index]["api_key"] = ""
+        else:
+            _delete_secret(key)
+            llm_payload[index]["api_key"] = ""
+
+    research_payload = payload.get("research_providers", [])
+    for index, provider in enumerate(options.research_providers):
+        kind = str(provider.kind or "").strip().lower()
+        api_key = str(provider.api_key or "")
+        if not kind:
+            continue
+        key = f"research/{kind}/api_key"
+        if api_key:
+            if _write_secret(key, api_key):
+                research_payload[index]["api_key"] = ""
+        else:
+            _delete_secret(key)
+            research_payload[index]["api_key"] = ""
+
+    return payload

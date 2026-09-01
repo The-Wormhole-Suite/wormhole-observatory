@@ -1,10 +1,14 @@
-# Pi-hole Manager
+# Wormhole Observatory
 
-Pi-hole Manager is a desktop application for **Pi-hole v6 or newer**. It combines management of exact whitelist and blacklist entries with local domain intelligence, evidence collection, structured LLM classification, and conservative automation.
+Wormhole Observatory is a desktop and headless management application for **Pi-hole v6 or newer**. It combines exact allow/deny management with local domain intelligence, evidence collection, structured LLM classification, conservative automation, review clients, and optional container/Home Assistant deployment.
+
+The project was developed under the working name **Pi-hole Manager**. Version 0.3.6 still retains some `pihole-manager` package names, entry points, and `Pi-Hole-Manager` build paths for compatibility; these identifiers do not indicate a separate project.
 
 ## Status
 
-Early alpha. Enable **Simulation mode** for the first live test so the complete pipeline can run without automatic Pi-hole changes.
+Pre-1.0 development. The repository is public and the current application version is 0.3.6. Enable **Simulation mode** for the first live test so the complete pipeline can run without automatic Pi-hole changes.
+
+Stable public release artifacts are reproducible Windows/Linux Onedir builds with signed provenance. A headless multi-architecture container and a Home Assistant App configuration are also maintained in this repository. See [docs/RELEASE_TRUST.md](docs/RELEASE_TRUST.md), [docs/REPRODUCIBLE_RELEASES.md](docs/REPRODUCIBLE_RELEASES.md), and [docs/CONTAINER.md](docs/CONTAINER.md).
 
 ## Core data flow
 
@@ -78,162 +82,57 @@ The **Domain Database** tab provides a searchable view of every stored classific
 entries that no longer require manual review. Its batch actions are **Re-analyze selected** and
 **Re-collect evidence**. Filters are available for free text, policy, tag, service role, review
 state, and overdue rechecks. Results are queried directly from SQLite and loaded in pages of 500
-entries.
+rows.
 
-The **Columns** menu in Live Queries, History Browser, Lists, Review Queue, and Domain Database
-controls which fields are shown. Columns can be reordered by dragging their headings or through the
-Reorder columns dialog. Review Queue headings can also be clicked to sort; the numbered column or
-**Reset sort** restores the original queue order. Auto-update, auto-scroll, and the refresh interval
-are configured directly in the Live Queries tab. Visibility, order, and widths are persisted
-separately for every table. The Pi-hole comment column is hidden by default in the Lists tab and can
-be enabled when needed. The Lists tab can queue selected entries or the complete current
-whitelist/blacklist for review, optionally limited to domains that have never been classified.
-
-
-## History Browser and idle backfill
-
-The **History Browser** searches Pi-hole query history by time range, domain, and client. It can show only domains that do not yet have a stored classification, optionally deduplicate repeated rows by domain, and queue selected rows or the complete page for review. Results are read in bounded pages and are never sent to the LLM merely by opening the browser.
-
-An optional idle history backfill can inspect older query pages after the live collector has received no new rows for a configured period. It queues only unclassified domains or domains whose recheck is due, processes one bounded page per cycle, and is disabled by default. Queue filtering is centralized; `.arpa` is excluded by default and additional suffixes can be configured under Automation without removing those rows from Live Queries or History Browser.
-
-## Settings behavior
-
-Settings pages scroll vertically when their content does not fit in the available window. Application, automation, provider, analysis-pool, prompt-profile, and evidence-source changes are saved automatically after validation. Pi-hole connection values remain explicit: **Save + Test** stores the base URL, password, timeout, and TLS setting before testing the saved connection. Optional help icons can be disabled globally from the Application page.
+The main domain tables share sortable columns for domain, state, policy, risk, confidence, evidence age, service, tags, source, and timestamps. Column visibility is configurable per table and persisted locally.
 
 ## Analysis pools and provider limits
 
-Realtime and background analysis have independent provider memberships, prompt profiles, and
-maximum parallelism. Each pool supports:
-
-- **Distribute:** deterministically assigns every domain to exactly one weighted provider.
-- **Fallback:** tries the next provider only for quota, cooldown, connection, timeout, or transient
-  service failures. Invalid model output does not multiply requests.
-- **Compare:** sends the same frozen dossier to every selected provider and stores results
-  side-by-side without updating the current classification or Pi-hole.
-- **Verify:** sends selected high-risk, sampled, or automation-eligible primary results to an
-  independent provider. A material disagreement forces manual review and prevents automatic action.
-
-The Analysis Pools settings page also runs a one-domain benchmark across selected providers using
-one identical dossier. Results include model, status, latency, policy, and category.
+Realtime and background analysis use separate configurable provider pools. A pool may contain one or more providers, and a provider can be used by both pools. The dispatcher can select the first available provider, round-robin between providers, or fan out a comparison run where appropriate. Only the primary result can trigger policy actions; comparison results remain available for review.
 
 Provider limit modes are **Auto**, **Auto with own caps**, and **Manual**. Resolution priority is:
-user caps, live response headers, a verified online registry, the bundled registry, then
-conservative limits for an unknown remote provider. Shared account quotas can be linked through a
-quota group. Context size, calibrated output usage, safety reserve, and provider-specific maximums
-determine the actual domains per request.
+provider-registry metadata, live provider headers, user caps, and finally conservative limits for an unknown remote provider. Shared account quotas can be linked through a common quota key.
 
-## Structured evidence and privacy
+## Evidence and research
 
-Every queued domain is still assessed by the LLM. The evidence layer does not replace the
-model and is not a low-confidence fallback. It collects compact, machine-readable facts first,
-then the LLM turns the complete dossier into tags, service attribution, risks, confidence, and a
-human-readable explanation. A deterministic policy engine remains the final gate before any
-Pi-hole change.
+Evidence collection is source-oriented rather than prompt-oriented. Each source has its own cache,
+TTL, quality metadata, and error state. Current adapters include DNS, RDAP, certificate transparency,
+list repositories, reputation sources, and optional authenticated feeds. The LLM receives a compact,
+bounded dossier; raw provider payloads are not blindly forwarded.
 
-Evidence sources are divided into three modes:
+Research may include, depending on configuration and availability:
 
-- **Local sources** inspect DNS data without contacting a dedicated evidence provider.
-- **Catalog sources** periodically download complete datasets and match domains locally.
-- **Lookup sources** send the investigated domain or a locally resolved public IP to a service.
-
-Built-in adapters include:
-
-- AdGuard service metadata for service and domain-family attribution
-- local A, AAAA, CNAME, NS, MX, HTTPS, and SVCB records
-- optional Disconnect tracker metadata
-- RDAP registration records
-- RIPEstat prefix, ASN, and network-holder information
+- DNS records and local resolver observations
+- RDAP registration data
+- certificate-transparency observations
+- RIPEstat/network metadata
+- list repository matches with provenance
+- Disconnect-style service/category data when licensing permits distribution
 - optional Netcraft Site Report parsing when robots.txt and fair-use access permit it
-- VirusTotal reputation and scanner verdicts
-- ThreatFox exact IOC matches
-- a locally indexed PhishTank verified-phishing database
 - existing urlscan.io scan metadata without submitting active scans
-- Cloudflare Radar popularity and category metadata
-
-Generic search engines and generic GitHub code search are intentionally excluded from the
-structured layer. There is no portable provider-independent model API flag that guarantees
-Internet access, and Pi-hole Manager does not currently invoke provider-specific web-search tools.
-A provider that performs browsing automatically may use official documentation, selected GitHub
-repositories, issues, discussions, Pi-hole community reports, and user reports. Other models must
-rely on the supplied dossier and must not claim independent web research.
-
-Findings are normalized to a signal type and verdict. Infrastructure context such as RDAP,
-Netcraft, DNS records, ASN ownership, or popularity can improve the LLM description but cannot by
-itself authorize automatic whitelist or blacklist actions. Only explicitly decision-relevant evidence,
-such as a confirmed tracker classification or active threat match, can satisfy the optional
-evidence requirement for automation.
+- authenticated URLhaus feed data when configured
 
 Prompt input is bounded: negative cache entries are omitted, decision-relevant findings are
 prioritized, summaries are truncated, and only a limited number of findings are sent. Full raw
-responses remain available in the local database for the details view.
+research remains local.
 
-External lookup providers receive the data described in their settings. Cloud-hosted LLMs receive
-the resulting dossier. Local SQLite storage, a local Pi-hole instance, catalog lookups after the
-catalog has been downloaded, and a locally hosted LLM remain inside the user's environment.
+## Protected services and dependency graphs
 
-## Prompt profiles and output contract
+Compatibility profiles identify protected services and domains where automatic blocking would be unusually risky. Service dependency graphs let classifications record relationships such as first-party service domains, shared infrastructure, authentication dependencies, telemetry, and optional components. Manual tags override LLM-generated tags without losing the model result.
 
-Prompt profiles customize analysis behavior. The default profile tells browsing-capable models to verify domains against official documentation, GitHub issues and discussions, Pi-hole community reports, reputable blocklist repositories, and credible user reports. Models without browsing must not claim that they searched the web. The application appends an immutable technical contract containing:
+Historical behavior-change detection compares evidence snapshots and classifications over time. Material changes can schedule a recheck rather than silently reusing an obsolete result. Evidence freshness is source- and tag-aware.
 
-- configured tags and policies
-- exact required fields
-- enumerated values and numeric ranges
-- the JSON Schema
-- one-result-per-domain rules
+## Pi-hole management
 
-The user template must include `{domain_dossiers}`. The effective prompt can be previewed in the settings UI.
+The manager supports exact domain rules, regex rules, subscribed lists, group assignment, multiple Pi-hole instances, list audits, conflict detection, and an audit log with rollback. Mutating operations pass through the same service layer so UI, review API, and automation do not implement separate rule-writing logic.
 
-Malformed, incomplete, duplicated, or mismatched results are rejected before they reach the policy engine.
+## Review API and PWA
 
-## LLM provider presets
+The optional local HTTP API exposes authenticated review operations and the responsive PWA. LAN and Tailscale access can be enabled without a public cloud. ntfy and UnifiedPush notifications can deep-link into a review item. Review decisions include allow, deny, postpone, ignore, and never-ask-again preferences.
 
-LLM providers and provider presets are sorted alphabetically; the active provider remains marked.
-Enabled evidence sources are shown before disabled sources and sorted alphabetically within each
-group. The LLM Providers settings page includes verified presets for major direct APIs, routing
-services, and local runtimes:
+See [docs/LOCAL_API.md](docs/LOCAL_API.md), [docs/REVIEW_PWA.md](docs/REVIEW_PWA.md), [docs/NETWORK_ACCESS.md](docs/NETWORK_ACCESS.md), and [docs/PUSH_NOTIFICATIONS.md](docs/PUSH_NOTIFICATIONS.md).
 
-- OpenAI, Anthropic Claude, Google Gemini, xAI, DeepSeek, and Mistral
-- GroqCloud, Cloudflare Workers AI, OpenRouter, Perplexity, Together AI, Fireworks AI, Cohere,
-  Cerebras, SambaNova, and Hugging Face Inference Providers
-- Ollama, LM Studio, llama.cpp, LocalAI, vLLM, and LiteLLM
-
-Dedicated free-tier presets are included for Groq GPT OSS 120B, Gemini 3.6 Flash, OpenRouter's
-free-model router, and Cloudflare Workers AI with Qwen3 30B, GPT OSS 20B, or GPT OSS 120B.
-Cerebras is labeled as a time-limited trial rather than a permanent free tier. GitHub Models is not
-offered because the service was retired. Adding a preset applies a conservative request profile;
-runtime headers and the quota manager remain authoritative.
-
-A practical free-tier starting point is Groq GPT OSS 120B as the realtime primary, Gemini as an
-alternative, and OpenRouter Free as the last fallback. For background distribution, use Cloudflare
-Workers AI with Qwen3 30B or GPT OSS 20B; select GPT OSS 120B when result quality matters more than
-neuron consumption. Cerebras should only be added while its trial is active. Provider credentials
-and Cloudflare account IDs must still be configured before adding these providers to a pool.
-
-The bundled `provider-registry.json` records reviewed capabilities, free-tier status, quota scope,
-and source URLs. A weekly workflow opens or updates a maintenance issue when entries need review.
-Publishing a remote registry is a separate environment-protected workflow: it signs the exact JSON
-with Ed25519 and uploads both `provider-registry.json` and `provider-registry.json.sig`. Runtime
-updates remain disabled until a reviewed public key replaces the placeholder and the matching
-private key is configured as the protected GitHub Actions secret
-`PROVIDER_REGISTRY_ED25519_PRIVATE_KEY`. Generate a pair with:
-
-```bash
-python scripts/provider_registry.py generate-key registry-private.pem \
-  pihole_manager/data/provider_registry_public_key.pem
-```
-
-Store `registry-private.pem` only in the protected secret, never in Git. After that one-time setup,
-enable verified registry updates under Analysis Pools.
-
-Most providers use the OpenAI-compatible Chat Completions transport. Anthropic uses its native Messages API. **Fetch models** queries the provider's live models endpoint when the provider exposes one, so model IDs do not need to remain hard-coded in the application. A custom OpenAI-compatible provider remains available for self-hosted and enterprise gateways.
-
-**Discover local servers** probes only well-known loopback endpoints on `127.0.0.1`. It can detect Ollama, LM Studio, LocalAI, llama.cpp, vLLM, and LiteLLM, import visible model IDs, and avoid duplicate provider entries. It never scans the LAN automatically. A model server on another machine can be added through a preset or custom base URL and queried with **Fetch models**.
-
-Provider settings also allow disabling the temperature parameter and selecting whether the API expects `max_tokens`, `max_completion_tokens`, or no output-token parameter. This is necessary because OpenAI-compatible implementations differ in these details.
-
-Azure OpenAI, Amazon Bedrock, and Google Vertex AI are not represented as one-click presets because their endpoint and authentication values depend on deployments, regions, resources, or cloud IAM. They can be connected through an OpenAI-compatible gateway such as LiteLLM.
-
-## Installation
+## Source installation
 
 Requirements:
 
@@ -274,7 +173,7 @@ The resulting Onedir application is written to `dist\Pi-Hole-Manager\`. Runtime 
 
 ## Configuration
 
-The first launch creates a local `options.json`. It may contain Pi-hole, LLM, and research credentials in plain text. Operating-system credential-store integration is planned before a stable release.
+The first launch creates a local `options.json` for non-secret application settings. Supported credentials are stored through the operating-system credential store rather than being deliberately persisted in plaintext configuration. Existing legacy values are migrated when the relevant credential path is used. Keep configuration files, databases, logs, exports, and backups private because they can still contain operational metadata.
 
 Pi-hole exposes version-specific API documentation at `http://pi.hole/api/docs`.
 
@@ -286,7 +185,7 @@ pytest
 ruff check .
 ```
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/ROADMAP.md](docs/ROADMAP.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), and [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Update service
 
@@ -304,11 +203,9 @@ The Application settings provide two channels:
 - **Stable releases** for normal version tags
 - **Prerelease versions** for beta, release-candidate, and automated `dev`-branch Onedir builds
 
-Update checks use the public GitHub Releases API. They remain unavailable while the repository is private; no GitHub token is stored or requested by the application.
+Update checks use the public GitHub Releases API and do not require a GitHub token to be stored by the application.
 
-Container installations do not use the desktop self-updater. Docker or the chosen container manager
-pulls a new image and recreates the container while persistent data remains in mounted volumes. A
-future Home Assistant app uses the same container image and Home Assistant's own update flow.
+Container installations do not use the desktop self-updater. Docker or the chosen container manager pulls a new image and recreates the container while persistent data remains in mounted volumes. The Home Assistant App uses the same container image and Home Assistant's own update flow.
 
 ## Evidence source tests
 

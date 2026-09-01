@@ -10,6 +10,7 @@ from typing import Any
 
 import requests
 
+from pihole_manager.cancellation import CancellationToken, raise_if_cancelled
 from pihole_manager.config import (
     LLMOptions,
     LLMProviderOptions,
@@ -208,12 +209,15 @@ def classify_domain(
     provider: LLMProviderOptions | None = None,
     profile: PromptProfileOptions | None = None,
     dossier: Mapping[str, Any] | None = None,
+    *,
+    cancel_token: CancellationToken | None = None,
 ) -> Classification:
     return classify_domains(
         [domain],
         provider=provider,
         profile=profile,
         dossiers=[dossier or {"domain": domain}],
+        cancel_token=cancel_token,
     )[0]
 
 
@@ -223,7 +227,9 @@ def classify_domains(
     provider: LLMProviderOptions | None = None,
     profile: PromptProfileOptions | None = None,
     dossiers: Sequence[Mapping[str, Any]] | None = None,
+    cancel_token: CancellationToken | None = None,
 ) -> list[Classification]:
+    raise_if_cancelled(cancel_token)
     normalized_domains = list(
         dict.fromkeys(domain.strip().lower().rstrip(".") for domain in domains if domain.strip())
     )
@@ -261,12 +267,14 @@ def classify_domains(
     )
     last_error: Exception | None = None
     for mode in modes:
+        raise_if_cancelled(cancel_token)
         response_format = _response_format(mode, llm_options.tags)
         try:
             text = request_provider_text(
                 selected_provider,
                 messages,
                 response_format=response_format,
+                cancel_token=cancel_token,
             )
             return parse_batch_classifications(
                 text,
@@ -297,7 +305,9 @@ def classify_domains_with_metadata(
     options: Options,
     pool_id: str,
     limit_profile: ProviderLimitProfile,
+    cancel_token: CancellationToken | None = None,
 ) -> ClassificationBatchResult:
+    raise_if_cancelled(cancel_token)
     normalized_domains = list(
         dict.fromkeys(domain.strip().lower().rstrip(".") for domain in domains if domain.strip())
     )
@@ -341,12 +351,14 @@ def classify_domains_with_metadata(
     )
     last_error: Exception | None = None
     for mode in modes:
+        raise_if_cancelled(cancel_token)
         try:
             response = request_provider(
                 provider,
                 messages,
                 response_format=_response_format(mode, options.llm.tags),
                 request_context=request_context,
+                cancel_token=cancel_token,
             )
             classifications = parse_batch_classifications(
                 response.text,

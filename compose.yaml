@@ -1,0 +1,16 @@
+services:
+  observatory:
+    image: ghcr.io/the-wormhole-suite/wormhole-observatory:latest
+    build:
+      context: .
+    environment:
+      WORMHOLE_API_TOKEN: ${WORMHOLE_API_TOKEN:?Set WORMHOLE_API_TOKEN before starting}
+      WORMHOLE_ACCESS_MODE: ${WORMHOLE_ACCESS_MODE:-lan_tailscale}
+    ports:
+      - "8765:8765"
+    volumes:
+      - wormhole-data:/data
+    restart: unless-stopped
+
+volumes:
+  wormhole-data:

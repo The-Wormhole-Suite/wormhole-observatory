@@ -126,9 +126,11 @@ decision logic; it suppresses only the final enforcement call.
 
 ## Secrets and privacy
 
-Runtime configuration, databases, evidence caches, and logs stay outside Git. Operating-system
-credential stores remain planned. Each evidence source exposes whether it downloads a catalog,
-runs locally, sends a domain, or sends resolved public IP addresses.
+Runtime configuration, databases, evidence caches, and logs stay outside Git. Desktop secrets use
+the operating-system credential store through `keyring`; when no usable credential backend exists,
+configuration keeps the existing plaintext value as an explicit no-data-loss compatibility fallback.
+Each evidence source exposes whether it downloads a catalog, runs locally, sends a domain, or sends
+resolved public IP addresses.
 
 
 ## Update service boundary

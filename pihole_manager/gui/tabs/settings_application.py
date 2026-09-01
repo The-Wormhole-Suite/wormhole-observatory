@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import secrets
 import threading
 import time
 import tkinter as tk
@@ -10,6 +11,11 @@ from tkinter import messagebox, ttk
 
 from pihole_manager import __version__
 from pihole_manager.config import Options, load_options, save_options
+from pihole_manager.network_access import (
+    ReviewAccessOptions,
+    load_review_access_options,
+    save_review_access_options,
+)
 from pihole_manager.updater import (
     InstallPlan,
     UpdateInfo,
@@ -42,6 +48,12 @@ class ApplicationSettingsPage(ttk.Frame):
         self.check_updates_automatically = tk.BooleanVar()
         self.update_channel = tk.StringVar()
         self.update_interval = tk.StringVar()
+
+        self.external_trigger_enabled = tk.BooleanVar()
+        self.external_trigger_host = tk.StringVar()
+        self.external_trigger_port = tk.StringVar()
+        self.external_trigger_token = tk.StringVar()
+        self.external_trigger_access_mode = tk.StringVar()
 
         ttk.Checkbutton(
             self,
@@ -118,6 +130,58 @@ class ApplicationSettingsPage(ttk.Frame):
             pady=(8, 0),
         )
 
+        trigger = ttk.LabelFrame(self, text="External review trigger", padding=10)
+        trigger.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(16, 0))
+        trigger.columnconfigure(1, weight=1)
+        ttk.Checkbutton(
+            trigger,
+            text="Enable authenticated HTTP trigger",
+            variable=self.external_trigger_enabled,
+        ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 6))
+        ttk.Label(trigger, text="Bind address").grid(row=1, column=0, sticky="w", pady=3)
+        ttk.Entry(trigger, textvariable=self.external_trigger_host).grid(
+            row=1, column=1, columnspan=2, sticky="ew", padx=(10, 0), pady=3
+        )
+        ttk.Label(trigger, text="Port").grid(row=2, column=0, sticky="w", pady=3)
+        ttk.Entry(trigger, textvariable=self.external_trigger_port, width=10).grid(
+            row=2, column=1, sticky="w", padx=(10, 0), pady=3
+        )
+        ttk.Label(trigger, text="Bearer token").grid(row=3, column=0, sticky="w", pady=3)
+        ttk.Entry(
+            trigger,
+            textvariable=self.external_trigger_token,
+            show="•",
+        ).grid(row=3, column=1, sticky="ew", padx=(10, 0), pady=3)
+        ttk.Button(
+            trigger,
+            text="Generate",
+            command=self._generate_trigger_token,
+        ).grid(row=3, column=2, sticky="e", padx=(8, 0), pady=3)
+        ttk.Label(trigger, text="Client access").grid(row=4, column=0, sticky="w", pady=3)
+        ttk.Combobox(
+            trigger,
+            textvariable=self.external_trigger_access_mode,
+            values=(
+                "Local only",
+                "LAN only",
+                "Tailscale only",
+                "LAN + Tailscale",
+                "Any network (advanced)",
+            ),
+            state="readonly",
+            width=28,
+        ).grid(row=4, column=1, columnspan=2, sticky="w", padx=(10, 0), pady=3)
+        ttk.Label(
+            trigger,
+            text=(
+                "Requests are filtered by source network before authentication. "
+                "For an installable PWA over Tailscale, prefer Tailscale Serve HTTPS "
+                "while Observatory stays bound to 127.0.0.1."
+            ),
+            wraplength=720,
+            justify="left",
+        ).grid(row=5, column=0, columnspan=3, sticky="ew", pady=(3, 0))
+
     def _row(
         self,
         label: str,
@@ -148,11 +212,42 @@ class ApplicationSettingsPage(ttk.Frame):
         self.update_channel.set(_CHANNEL_NAMES.get(options.updates.channel, "Stable releases"))
         self.update_interval.set(str(options.updates.check_interval_hours))
 
+        self.external_trigger_enabled.set(options.external_trigger.enabled)
+        self.external_trigger_host.set(options.external_trigger.bind_host)
+        self.external_trigger_port.set(str(options.external_trigger.port))
+        self.external_trigger_token.set(options.external_trigger.token)
+        access_labels = {
+            "local": "Local only",
+            "lan": "LAN only",
+            "tailscale": "Tailscale only",
+            "lan_tailscale": "LAN + Tailscale",
+            "any": "Any network (advanced)",
+        }
+        access = load_review_access_options(options.external_trigger)
+        self.external_trigger_access_mode.set(access_labels.get(access.mode, "Local only"))
+
     def store(self, options: Options) -> bool:
         try:
             update_interval = max(1, int(self.update_interval.get()))
+            trigger_port = int(self.external_trigger_port.get())
         except ValueError:
-            messagebox.showerror("Application", "Update interval must be a whole number.")
+            messagebox.showerror(
+                "Application",
+                "Update interval and external trigger port must be whole numbers.",
+            )
+            return False
+        if not 1 <= trigger_port <= 65_535:
+            messagebox.showerror(
+                "Application",
+                "External trigger port must be between 1 and 65535.",
+            )
+            return False
+        trigger_token = self.external_trigger_token.get().strip()
+        if self.external_trigger_enabled.get() and not trigger_token:
+            messagebox.showerror(
+                "Application",
+                "Generate or enter a bearer token before enabling the external trigger.",
+            )
             return False
         options.logging.enabled = self.logging_enabled.get()
         options.logging.level = self.logging_level.get()
@@ -162,7 +257,26 @@ class ApplicationSettingsPage(ttk.Frame):
         options.updates.check_automatically = self.check_updates_automatically.get()
         options.updates.channel = _CHANNEL_LABELS.get(self.update_channel.get(), "stable")
         options.updates.check_interval_hours = update_interval
+        options.external_trigger.enabled = self.external_trigger_enabled.get()
+        options.external_trigger.bind_host = (
+            self.external_trigger_host.get().strip() or "127.0.0.1"
+        )
+        options.external_trigger.port = trigger_port
+        options.external_trigger.token = trigger_token
+        access_modes = {
+            "Local only": "local",
+            "LAN only": "lan",
+            "Tailscale only": "tailscale",
+            "LAN + Tailscale": "lan_tailscale",
+            "Any network (advanced)": "any",
+        }
+        access_mode = access_modes.get(self.external_trigger_access_mode.get(), "local")
+        options.external_trigger.allow_remote = access_mode != "local"
+        save_review_access_options(ReviewAccessOptions(mode=access_mode))
         return True
+
+    def _generate_trigger_token(self) -> None:
+        self.external_trigger_token.set(secrets.token_urlsafe(32))
 
     def check_for_updates(self, *, silent: bool = False) -> None:
         if self._checking_updates:

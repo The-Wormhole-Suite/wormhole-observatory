@@ -1,0 +1,174 @@
+from __future__ import annotations
+
+import json
+import logging
+
+from pihole_manager import credentials
+from pihole_manager.config import load_options, options_path, save_options
+
+
+class FakeKeyring:
+    def __init__(self) -> None:
+        self.values: dict[tuple[str, str], str] = {}
+        self.fail_reads = False
+        self.deleted: list[tuple[str, str]] = []
+
+    def get_password(self, service: str, key: str):
+        if self.fail_reads:
+            raise RuntimeError("temporary backend failure")
+        return self.values.get((service, key))
+
+    def set_password(self, service: str, key: str, value: str) -> None:
+        self.values[(service, key)] = value
+
+    def delete_password(self, service: str, key: str) -> None:
+        self.deleted.append((service, key))
+        self.values.pop((service, key), None)
+
+
+def test_secrets_are_saved_in_keyring_and_removed_from_json(monkeypatch, tmp_path) -> None:
+    fake = FakeKeyring()
+    monkeypatch.setenv("PIHOLE_MANAGER_HOME", str(tmp_path))
+    monkeypatch.setattr(credentials, "_keyring_module", lambda: fake)
+
+    options = load_options()
+    options.pihole.password = "pihole-secret"
+    options.llm_providers[0].api_key = "llm-secret"
+    options.research_providers[0].api_key = "research-secret"
+    provider_id = options.llm_providers[0].provider_id
+    research_kind = options.research_providers[0].kind
+
+    save_options(options)
+
+    raw = json.loads(options_path().read_text(encoding="utf-8"))
+    assert raw["pihole"]["password"] == ""
+    assert raw["llm_providers"][0]["api_key"] == ""
+    assert raw["research_providers"][0]["api_key"] == ""
+    assert fake.get_password(credentials.SERVICE_NAME, "pihole/password") == "pihole-secret"
+    assert (
+        fake.get_password(credentials.SERVICE_NAME, f"llm/{provider_id}/api_key")
+        == "llm-secret"
+    )
+    assert (
+        fake.get_password(credentials.SERVICE_NAME, f"research/{research_kind}/api_key")
+        == "research-secret"
+    )
+
+    loaded = load_options()
+    assert loaded.pihole.password == "pihole-secret"
+    assert loaded.llm_providers[0].api_key == "llm-secret"
+    assert loaded.research_providers[0].api_key == "research-secret"
+
+
+def test_legacy_plaintext_secret_is_migrated_and_scrubbed(monkeypatch, tmp_path) -> None:
+    fake = FakeKeyring()
+    monkeypatch.setenv("PIHOLE_MANAGER_HOME", str(tmp_path))
+    monkeypatch.setattr(credentials, "_keyring_module", lambda: fake)
+    options_path().write_text(
+        json.dumps(
+            {
+                "schema_version": 17,
+                "pihole": {"password": "legacy-secret"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    options = load_options()
+
+    assert options.pihole.password == "legacy-secret"
+    assert fake.get_password(credentials.SERVICE_NAME, "pihole/password") == "legacy-secret"
+    raw = json.loads(options_path().read_text(encoding="utf-8"))
+    assert raw["pihole"]["password"] == ""
+
+
+def test_plaintext_is_preserved_when_keyring_backend_is_unavailable(monkeypatch, tmp_path) -> None:
+    class BrokenKeyring:
+        def get_password(self, service: str, key: str):
+            raise RuntimeError("backend unavailable")
+
+        def set_password(self, service: str, key: str, value: str) -> None:
+            raise RuntimeError("backend unavailable")
+
+        def delete_password(self, service: str, key: str) -> None:
+            raise RuntimeError("backend unavailable")
+
+    monkeypatch.setenv("PIHOLE_MANAGER_HOME", str(tmp_path))
+    monkeypatch.setattr(credentials, "_keyring_module", lambda: BrokenKeyring())
+
+    options = load_options()
+    options.pihole.password = "must-not-be-lost"
+    save_options(options)
+
+    raw = json.loads(options_path().read_text(encoding="utf-8"))
+    assert raw["pihole"]["password"] == "must-not-be-lost"
+
+
+def test_transient_keyring_read_failure_cannot_delete_recovered_secret(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    fake = FakeKeyring()
+    monkeypatch.setenv("PIHOLE_MANAGER_HOME", str(tmp_path))
+    monkeypatch.setattr(credentials, "_keyring_module", lambda: fake)
+
+    options = load_options()
+    options.pihole.password = "pihole-secret"
+    save_options(options)
+    fake.deleted.clear()
+
+    fake.fail_reads = True
+    loaded = load_options()
+    assert loaded.pihole.password == ""
+
+    fake.fail_reads = False
+    loaded.ui.theme = "dark"
+    save_options(loaded)
+
+    key = (credentials.SERVICE_NAME, "pihole/password")
+    assert fake.values[key] == "pihole-secret"
+    assert key not in fake.deleted
+    assert load_options().pihole.password == "pihole-secret"
+
+
+def test_first_start_hydrates_existing_keyring_secret_without_deleting_it(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    fake = FakeKeyring()
+    key = (credentials.SERVICE_NAME, "pihole/password")
+    fake.values[key] = "existing-secret"
+    monkeypatch.setenv("PIHOLE_MANAGER_HOME", str(tmp_path))
+    monkeypatch.setattr(credentials, "_keyring_module", lambda: fake)
+
+    options = load_options()
+
+    assert options.pihole.password == "existing-secret"
+    assert fake.values[key] == "existing-secret"
+    assert key not in fake.deleted
+    raw = json.loads(options_path().read_text(encoding="utf-8"))
+    assert raw["pihole"]["password"] == ""
+
+
+def test_keyring_backend_exception_details_are_not_logged(monkeypatch, caplog) -> None:
+    marker = "sensitive-backend-detail"
+
+    class BrokenKeyring:
+        def get_password(self, service: str, key: str):
+            raise RuntimeError(marker)
+
+        def set_password(self, service: str, key: str, value: str) -> None:
+            raise RuntimeError(marker)
+
+    monkeypatch.setattr(credentials, "_keyring_module", lambda: BrokenKeyring())
+
+    with caplog.at_level(logging.WARNING, logger=credentials.__name__):
+        state, value = credentials._read_secret("pihole/password")
+        written = credentials._write_secret("pihole/password", "do-not-log")
+
+    assert state is credentials.CredentialReadState.UNAVAILABLE
+    assert value == ""
+    assert written is False
+    assert marker not in caplog.text
+    assert "pihole/password" not in caplog.text
+    assert "RuntimeError" in caplog.text

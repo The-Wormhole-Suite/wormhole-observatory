@@ -1,0 +1,30 @@
+name: Wormhole Observatory
+version: "0.3.6"
+slug: wormhole_observatory
+description: >-
+  Headless Wormhole Observatory review API, PWA and background domain-analysis workers.
+url: https://github.com/The-Wormhole-Suite/wormhole-observatory
+arch:
+  - aarch64
+  - amd64
+image: ghcr.io/the-wormhole-suite/wormhole-observatory
+legacy: true
+startup: application
+boot: auto
+ingress: false
+webui: "http://[HOST]:[PORT:8765]/app/"
+ports:
+  "8765/tcp": 8765
+ports_description:
+  "8765/tcp": Wormhole Observatory review API and PWA
+watchdog: "tcp://[HOST]:[PORT:8765]"
+backup: cold
+stage: experimental
+options:
+  api_token: null
+  access_mode: lan_tailscale
+  max_domains: 500
+schema:
+  api_token: password
+  access_mode: "list(local|lan|tailscale|lan_tailscale|any)"
+  max_domains: "int(1,10000)"

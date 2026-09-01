@@ -4,6 +4,10 @@ import json
 import threading
 import time
 from types import SimpleNamespace
+from urllib.parse import quote
+
+import pytest
+import requests
 
 from pihole_manager.config import ResearchProviderOptions
 from pihole_manager.research import provider_snapshot
@@ -20,6 +24,148 @@ def test_provider_snapshot_redacts_api_key() -> None:
     assert snapshot["kind"] == "virustotal"
     assert snapshot["mode"] == "lookup"
     assert snapshot["sends_domain"] is True
+
+
+def test_catalog_cache_never_persists_api_key_and_scrubs_legacy_metadata(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from pihole_manager.research_common import fetch_cached_bytes
+
+    secret = "secret/value key"
+    provider = ResearchProviderOptions(
+        name="PhishTank",
+        kind="phishtank",
+        api_key=secret,
+    )
+    monkeypatch.setattr("pihole_manager.research_common.cache_directory", lambda: tmp_path)
+    monkeypatch.setattr(
+        "pihole_manager.research_common.wait_for_provider",
+        lambda _provider: None,
+    )
+    legacy = tmp_path / "legacy.json"
+    legacy.write_text(
+        json.dumps(
+            {
+                "url": f"https://feed.example/{secret}/catalog",
+                "encoded": f"https://feed.example/{quote(secret, safe='')}/catalog",
+            }
+        ),
+        encoding="utf-8",
+    )
+    requested: list[str] = []
+
+    class Response:
+        status_code = 200
+        headers: dict[str, str] = {}
+        content = b"catalog"
+
+        def raise_for_status(self) -> None:
+            return None
+
+    def fake_get(url: str, **_kwargs):
+        requested.append(url)
+        return Response()
+
+    monkeypatch.setattr("pihole_manager.research_common.requests.get", fake_get)
+    payload = fetch_cached_bytes(
+        provider,
+        "https://feed.example/{api_key}/catalog",
+        accept="application/json",
+    )
+
+    assert payload == b"catalog"
+    assert requested == [f"https://feed.example/{secret}/catalog"]
+    metadata_text = "\n".join(
+        path.read_text(encoding="utf-8") for path in sorted(tmp_path.glob("*.json"))
+    )
+    assert secret not in metadata_text
+    assert quote(secret, safe="") not in metadata_text
+    assert "{api_key}" in metadata_text
+
+
+def test_catalog_request_exception_redacts_api_key_from_message_and_urls(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from pihole_manager.research_common import fetch_cached_bytes
+
+    secret = "top-secret-token"
+    provider = ResearchProviderOptions(
+        name="PhishTank",
+        kind="phishtank",
+        api_key=secret,
+    )
+    monkeypatch.setattr("pihole_manager.research_common.cache_directory", lambda: tmp_path)
+    monkeypatch.setattr(
+        "pihole_manager.research_common.wait_for_provider",
+        lambda _provider: None,
+    )
+
+    def fail(url: str, **_kwargs):
+        request = requests.Request("GET", url).prepare()
+        response = requests.Response()
+        response.status_code = 403
+        response.url = url
+        response.request = request
+        raise requests.HTTPError(
+            f"403 Client Error for url: {url}",
+            response=response,
+            request=request,
+        )
+
+    monkeypatch.setattr("pihole_manager.research_common.requests.get", fail)
+
+    with pytest.raises(requests.HTTPError) as error:
+        fetch_cached_bytes(
+            provider,
+            "https://feed.example/{api_key}/catalog",
+            accept="application/json",
+        )
+
+    assert secret not in str(error.value)
+    assert secret not in str(error.value.response.url)
+    assert secret not in str(error.value.request.url)
+
+
+def test_evidence_test_and_worker_log_redact_provider_api_key(
+    monkeypatch,
+    caplog,
+) -> None:
+    from pihole_manager.research import research_many, test_research_provider
+
+    secret = "private-source-key"
+    provider = ResearchProviderOptions(
+        name="PhishTank",
+        kind="phishtank",
+        enabled=True,
+        api_key=secret,
+    )
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError(f"request failed at https://feed.example/{secret}/catalog")
+
+    monkeypatch.setattr("pihole_manager.research._run_provider_with_retries", fail)
+    test_result = test_research_provider(provider)
+    assert secret not in test_result.summary
+    assert "***" in test_result.summary
+
+    options = SimpleNamespace(
+        research_providers=[provider],
+        llm=SimpleNamespace(max_retries=0),
+    )
+    monkeypatch.setattr("pihole_manager.research.load_options", lambda: options)
+    monkeypatch.setattr(
+        "pihole_manager.research.research_findings_get",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr("pihole_manager.research.get_domain_lock", lambda _domain: None)
+    caplog.set_level("WARNING")
+
+    research_many(["example.com"])
+
+    assert secret not in caplog.text
+    assert "***" in caplog.text
 
 
 def test_cached_research_is_used_without_external_refresh(monkeypatch, tmp_path) -> None:
