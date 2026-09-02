@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import bz2
-import hashlib
+import hmac
 import json
 import threading
 import time
@@ -17,6 +17,7 @@ from pihole_manager.research_common import (
     normalize_domain,
 )
 
+_INDEX_FINGERPRINT_CONTEXT = b"wormhole-observatory:catalog-index:v1"
 _INDEX_LOCK = threading.RLock()
 _INDEX_CACHE: dict[str, Any] = {}
 _INDEX_LOCKS: dict[str, threading.RLock] = {}
@@ -147,7 +148,7 @@ def research_phishtank(
 
 
 def _cached_index(prefix: str, payload: bytes, builder):
-    digest = hashlib.sha256(payload).hexdigest()
+    digest = hmac.digest(_INDEX_FINGERPRINT_CONTEXT, payload, "sha256").hex()
     key = f"{prefix}:{digest}"
     with _index_lock(prefix):
         with _INDEX_LOCK:

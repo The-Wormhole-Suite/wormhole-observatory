@@ -19,17 +19,20 @@ from pihole_manager.quota import (
     batch_fits_context,
     complete_quota,
     quota_runtime_states,
+    quota_scope_key,
     reserve_quota,
 )
 
 
-def _provider(*, provider_id: str = "provider-test") -> LLMProviderOptions:
+def _provider(
+    *, provider_id: str = "provider-test", api_key: str = "shared-key"
+) -> LLMProviderOptions:
     return LLMProviderOptions(
         provider_id=provider_id,
         name="Test provider",
         preset_id="custom",
         base_url="https://api.example/v1",
-        api_key="shared-key",
+        api_key=api_key,
         model="model-a",
         limits=ProviderLimitOptions(safety_margin_percent=0),
     )
@@ -41,6 +44,32 @@ def _profile(*limits: ProviderLimit) -> ProviderLimitProfile:
         limits=tuple(limits),
         safety_margin_percent=0,
     )
+
+
+def test_quota_scope_key_uses_stable_non_plaintext_account_fingerprint() -> None:
+    limits = (
+        ProviderLimit(
+            metric="requests",
+            amount=10,
+            window_seconds=60,
+            scope="account",
+            source="test",
+        ),
+    )
+    profile = _profile(*limits)
+    first = _provider(provider_id="provider-a")
+    second = _provider(provider_id="provider-b")
+
+    first_key = quota_scope_key(first, profile)
+    second_key = quota_scope_key(second, profile)
+
+    assert first_key == second_key
+    assert first.api_key not in first_key
+
+    different = _provider(
+        provider_id="provider-c", api_key="different-shared-key"
+    )
+    assert quota_scope_key(different, profile) != first_key
 
 
 def test_request_quota_is_reserved_atomically(monkeypatch, tmp_path) -> None:
