@@ -73,6 +73,17 @@ jobs:
                   raise RuntimeError(f"Expected one match in {path}, found {count}")
               target.write_text(text.replace(old, new, 1), encoding="utf-8")
 
+          def replace_between(path: str, start_marker: str, end_marker: str, new: str) -> None:
+              target = Path(path)
+              text = target.read_text(encoding="utf-8")
+              start = text.find(start_marker)
+              if start < 0:
+                  raise RuntimeError(f"Missing start marker in {path}: {start_marker!r}")
+              end = text.find(end_marker, start)
+              if end < 0:
+                  raise RuntimeError(f"Missing end marker in {path}: {end_marker!r}")
+              target.write_text(text[:start] + new + text[end:], encoding="utf-8")
+
           replace_once(
               "pihole_manager/quota.py",
               '''    # This is a stable quota/account namespace fingerprint, not credential
@@ -102,28 +113,10 @@ jobs:
               "_INDEX_CACHE: dict[str, Any] = {}\n",
               "_INDEX_CACHE: dict[str, tuple[bytes, Any]] = {}\n",
           )
-          replace_once(
+          replace_between(
               "pihole_manager/research_catalogs.py",
-              '''def _cached_index(prefix: str, payload: bytes, builder):
-              digest = hmac.digest(_INDEX_FINGERPRINT_CONTEXT, payload, "sha256").hex()
-              key = f"{prefix}:{digest}"
-              with _index_lock(prefix):
-                  with _INDEX_LOCK:
-                      cached = _INDEX_CACHE.get(key)
-                  if cached is not None:
-                      return cached
-
-                  built = builder(payload)
-                  with _INDEX_LOCK:
-                      stale_keys = [
-                          cached_key
-                          for cached_key in _INDEX_CACHE
-                          if cached_key.startswith(f"{prefix}:") and cached_key != key
-                      ]
-                      for stale_key in stale_keys:
-                          del _INDEX_CACHE[stale_key]
-                      return _INDEX_CACHE.setdefault(key, built)
-              ''',
+              "def _cached_index(prefix: str, payload: bytes, builder):\n",
+              "\n\ndef _index_lock(prefix: str) -> threading.RLock:\n",
               '''def _cached_index(prefix: str, payload: bytes, builder):
               # Retain one immutable source payload next to its parsed index. Exact byte
               # comparison avoids treating authenticated download content as password-like
@@ -140,17 +133,22 @@ jobs:
                   return built
               ''',
           )
-          replace_once(
+          replace_between(
               "tests/test_research.py",
-              '''    first = research_catalogs._cached_index("adguard", b"one", build)
-              second = research_catalogs._cached_index("disconnect", b"two", build)
-              repeated = research_catalogs._cached_index("adguard", b"one", build)
+              "def test_catalog_indexes_for_different_sources_remain_cached() -> None:\n",
+              "\n\ndef test_catalog_downloads_use_independent_cache_locks(monkeypatch, tmp_path) -> None:\n",
+              '''def test_catalog_indexes_for_different_sources_remain_cached() -> None:
+              from pihole_manager import research_catalogs
 
-              assert first is repeated
-              assert second == {"payload": b"two"}
-              assert calls == [b"one", b"two"]
-              ''',
-              '''    first = research_catalogs._cached_index("adguard", b"one", build)
+              research_catalogs._INDEX_CACHE.clear()
+              research_catalogs._INDEX_LOCKS.clear()
+              calls: list[bytes] = []
+
+              def build(payload: bytes) -> dict[str, bytes]:
+                  calls.append(payload)
+                  return {"payload": payload}
+
+              first = research_catalogs._cached_index("adguard", b"one", build)
               second = research_catalogs._cached_index("disconnect", b"two", build)
               repeated = research_catalogs._cached_index("adguard", b"one", build)
               changed = research_catalogs._cached_index("adguard", b"updated", build)
