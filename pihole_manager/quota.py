@@ -372,10 +372,10 @@ def quota_scope_key(
         group = host or provider.provider_id
     account_identity = (provider.api_key or provider.provider_id).encode("utf-8")
     # This is a stable quota/account namespace fingerprint, not credential
-    # authentication or password storage. HMAC avoids exposing a raw hash of
-    # the credential while preserving deterministic grouping across restarts.
+    # authentication or password storage. Treat the account identity as the
+    # HMAC key so the credential is never used as ordinary hash payload.
     account_fingerprint = hmac.digest(
-        _QUOTA_FINGERPRINT_CONTEXT, account_identity, "sha256"
+        account_identity, _QUOTA_FINGERPRINT_CONTEXT, "sha256"
     ).hex()[:16]
     include_model = not scopes.intersection({"account", "organization", "project"})
     parts = [group, account_fingerprint]
