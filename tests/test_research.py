@@ -553,11 +553,13 @@ def test_catalog_indexes_for_different_sources_remain_cached() -> None:
     first = research_catalogs._cached_index("adguard", b"one", build)
     second = research_catalogs._cached_index("disconnect", b"two", build)
     repeated = research_catalogs._cached_index("adguard", b"one", build)
+    changed = research_catalogs._cached_index("adguard", b"updated", build)
 
     assert first is repeated
     assert second == {"payload": b"two"}
-    assert calls == [b"one", b"two"]
-
+    assert changed == {"payload": b"updated"}
+    assert calls == [b"one", b"two", b"updated"]
+    
 
 def test_catalog_downloads_use_independent_cache_locks(monkeypatch, tmp_path) -> None:
     from concurrent.futures import ThreadPoolExecutor

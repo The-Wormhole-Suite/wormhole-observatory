@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import bz2
-import hashlib
 import json
 import threading
 import time
@@ -18,7 +17,7 @@ from pihole_manager.research_common import (
 )
 
 _INDEX_LOCK = threading.RLock()
-_INDEX_CACHE: dict[str, Any] = {}
+_INDEX_CACHE: dict[str, tuple[bytes, Any]] = {}
 _INDEX_LOCKS: dict[str, threading.RLock] = {}
 
 
@@ -147,25 +146,20 @@ def research_phishtank(
 
 
 def _cached_index(prefix: str, payload: bytes, builder):
-    digest = hashlib.sha256(payload).hexdigest()
-    key = f"{prefix}:{digest}"
+    # Retain one immutable source payload next to its parsed index. Exact byte
+    # comparison avoids treating authenticated download content as password-like
+    # hash input and guarantees that changed catalogs invalidate the cache.
     with _index_lock(prefix):
         with _INDEX_LOCK:
-            cached = _INDEX_CACHE.get(key)
-        if cached is not None:
-            return cached
+            cached = _INDEX_CACHE.get(prefix)
+        if cached is not None and cached[0] == payload:
+            return cached[1]
 
         built = builder(payload)
         with _INDEX_LOCK:
-            stale_keys = [
-                cached_key
-                for cached_key in _INDEX_CACHE
-                if cached_key.startswith(f"{prefix}:") and cached_key != key
-            ]
-            for stale_key in stale_keys:
-                del _INDEX_CACHE[stale_key]
-            return _INDEX_CACHE.setdefault(key, built)
-
+            _INDEX_CACHE[prefix] = (payload, built)
+        return built
+    
 
 def _index_lock(prefix: str) -> threading.RLock:
     with _INDEX_LOCK:

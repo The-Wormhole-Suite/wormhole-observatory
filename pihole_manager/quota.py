@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import hashlib
+import hmac
 import json
 import math
 import threading
@@ -20,6 +20,7 @@ from pihole_manager.provider_registry import ProviderLimit, ProviderLimitProfile
 
 _INITIALIZATION_LOCK = threading.Lock()
 _INITIALIZED_DATABASES: set[str] = set()
+_QUOTA_FINGERPRINT_CONTEXT = b"wormhole-observatory:quota-scope:v1"
 _METRIC_COLUMNS = {
     "requests": "request_count",
     "input_tokens": "input_tokens",
@@ -369,9 +370,13 @@ def quota_scope_key(
     if not group:
         host = (urlparse(provider.base_url).hostname or provider.preset_id).lower()
         group = host or provider.provider_id
-    account_fingerprint = hashlib.sha256(
-        (provider.api_key or provider.provider_id).encode("utf-8")
-    ).hexdigest()[:16]
+    account_identity = (provider.api_key or provider.provider_id).encode("utf-8")
+    # This is a stable quota/account namespace fingerprint, not credential
+    # authentication or password storage. Treat the account identity as the
+    # HMAC key so the credential is never used as ordinary hash payload.
+    account_fingerprint = hmac.digest(
+        account_identity, _QUOTA_FINGERPRINT_CONTEXT, "sha256"
+    ).hex()[:16]
     include_model = not scopes.intersection({"account", "organization", "project"})
     parts = [group, account_fingerprint]
     if include_model:
