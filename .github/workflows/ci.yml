@@ -2,12 +2,6 @@ name: CI
 
 on:
   workflow_dispatch:
-    inputs:
-      apply_fingerprint_fix_v2:
-        description: Apply the audited second CodeQL fingerprint remediation
-        required: false
-        type: boolean
-        default: false
   pull_request:
   push:
     branches:
@@ -23,7 +17,6 @@ permissions:
 
 jobs:
   test:
-    if: github.event_name != 'workflow_dispatch' || !inputs.apply_fingerprint_fix_v2
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -44,136 +37,3 @@ jobs:
         if: matrix.python-version == '3.12'
         run: ruff check .
       - run: pytest
-
-  apply-fingerprint-fix-v2:
-    if: github.event_name == 'workflow_dispatch' && inputs.apply_fingerprint_fix_v2
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: ${{ github.ref_name }}
-          fetch-depth: 0
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.12'
-      - name: Apply second fingerprint remediation
-        shell: bash
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          from pathlib import Path
-
-          def replace_once(path: str, old: str, new: str) -> None:
-              target = Path(path)
-              text = target.read_text(encoding="utf-8")
-              count = text.count(old)
-              if count != 1:
-                  raise RuntimeError(f"Expected one match in {path}, found {count}")
-              target.write_text(text.replace(old, new, 1), encoding="utf-8")
-
-          def replace_between(path: str, start_marker: str, end_marker: str, new: str) -> None:
-              target = Path(path)
-              text = target.read_text(encoding="utf-8")
-              start = text.find(start_marker)
-              if start < 0:
-                  raise RuntimeError(f"Missing start marker in {path}: {start_marker!r}")
-              end = text.find(end_marker, start)
-              if end < 0:
-                  raise RuntimeError(f"Missing end marker in {path}: {end_marker!r}")
-              target.write_text(text[:start] + new + text[end:], encoding="utf-8")
-
-          replace_once(
-              "pihole_manager/quota.py",
-              '''    # This is a stable quota/account namespace fingerprint, not credential
-              # authentication or password storage. HMAC avoids exposing a raw hash of
-              # the credential while preserving deterministic grouping across restarts.
-              account_fingerprint = hmac.digest(
-                  _QUOTA_FINGERPRINT_CONTEXT, account_identity, "sha256"
-              ).hex()[:16]
-              ''',
-              '''    # This is a stable quota/account namespace fingerprint, not credential
-              # authentication or password storage. Treat the account identity as the
-              # HMAC key so the credential is never used as ordinary hash payload.
-              account_fingerprint = hmac.digest(
-                  account_identity, _QUOTA_FINGERPRINT_CONTEXT, "sha256"
-              ).hex()[:16]
-              ''',
-          )
-
-          replace_once("pihole_manager/research_catalogs.py", "import hmac\n", "")
-          replace_once(
-              "pihole_manager/research_catalogs.py",
-              '_INDEX_FINGERPRINT_CONTEXT = b"wormhole-observatory:catalog-index:v1"\n',
-              "",
-          )
-          replace_once(
-              "pihole_manager/research_catalogs.py",
-              "_INDEX_CACHE: dict[str, Any] = {}\n",
-              "_INDEX_CACHE: dict[str, tuple[bytes, Any]] = {}\n",
-          )
-          replace_between(
-              "pihole_manager/research_catalogs.py",
-              "def _cached_index(prefix: str, payload: bytes, builder):\n",
-              "\n\ndef _index_lock(prefix: str) -> threading.RLock:\n",
-              '''def _cached_index(prefix: str, payload: bytes, builder):
-              # Retain one immutable source payload next to its parsed index. Exact byte
-              # comparison avoids treating authenticated download content as password-like
-              # hash input and guarantees that changed catalogs invalidate the cache.
-              with _index_lock(prefix):
-                  with _INDEX_LOCK:
-                      cached = _INDEX_CACHE.get(prefix)
-                  if cached is not None and cached[0] == payload:
-                      return cached[1]
-
-                  built = builder(payload)
-                  with _INDEX_LOCK:
-                      _INDEX_CACHE[prefix] = (payload, built)
-                  return built
-              ''',
-          )
-          replace_between(
-              "tests/test_research.py",
-              "def test_catalog_indexes_for_different_sources_remain_cached() -> None:\n",
-              "\n\ndef test_catalog_downloads_use_independent_cache_locks(monkeypatch, tmp_path) -> None:\n",
-              '''def test_catalog_indexes_for_different_sources_remain_cached() -> None:
-              from pihole_manager import research_catalogs
-
-              research_catalogs._INDEX_CACHE.clear()
-              research_catalogs._INDEX_LOCKS.clear()
-              calls: list[bytes] = []
-
-              def build(payload: bytes) -> dict[str, bytes]:
-                  calls.append(payload)
-                  return {"payload": payload}
-
-              first = research_catalogs._cached_index("adguard", b"one", build)
-              second = research_catalogs._cached_index("disconnect", b"two", build)
-              repeated = research_catalogs._cached_index("adguard", b"one", build)
-              changed = research_catalogs._cached_index("adguard", b"updated", build)
-
-              assert first is repeated
-              assert second == {"payload": b"two"}
-              assert changed == {"payload": b"updated"}
-              assert calls == [b"one", b"two", b"updated"]
-              ''',
-          )
-          PY
-      - name: Validate before commit
-        shell: bash
-        run: |
-          set -euo pipefail
-          python -m pip install -e ".[dev]"
-          python scripts/check_repository_integrity.py
-          ruff check pihole_manager/quota.py pihole_manager/research_catalogs.py tests/test_quota.py tests/test_research.py
-          pytest tests/test_quota.py tests/test_research.py
-      - name: Commit source remediation
-        shell: bash
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add pihole_manager/quota.py pihole_manager/research_catalogs.py tests/test_research.py
-          git commit -m "Refine security fingerprint and catalog cache semantics"
-          git push origin "HEAD:${{ github.ref_name }}"
