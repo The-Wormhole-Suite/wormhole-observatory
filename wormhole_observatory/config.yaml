@@ -1,5 +1,5 @@
 name: Wormhole Observatory
-version: "0.3.6"
+version: "0.3.7"
 slug: wormhole_observatory
 description: >-
   Headless Wormhole Observatory review API, PWA and background domain-analysis workers.

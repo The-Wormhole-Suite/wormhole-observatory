@@ -36,4 +36,23 @@ jobs:
       - name: Ruff
         if: matrix.python-version == '3.12'
         run: ruff check .
+      - name: Tkinter GUI startup smoke
+        if: matrix.python-version == '3.12'
+        shell: bash
+        run: |
+          if ! command -v xvfb-run >/dev/null 2>&1; then
+            echo "xvfb-run is required for the Linux GUI startup smoke test" >&2
+            exit 1
+          fi
+          log_file="$(mktemp)"
+          set +e
+          timeout --signal=TERM 8s xvfb-run -a python app.py >"$log_file" 2>&1
+          status=$?
+          set -e
+          if [ "$status" -eq 124 ]; then
+            exit 0
+          fi
+          cat "$log_file"
+          echo "GUI exited before the startup smoke window completed (status=$status)" >&2
+          exit 1
       - run: pytest

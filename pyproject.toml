@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pihole-manager"
-version = "0.3.6"
+version = "0.3.7"
 description = "Desktop manager for Pi-hole v6 with optional LLM-assisted domain review"
 readme = "README.md"
 license = "AGPL-3.0-only"
