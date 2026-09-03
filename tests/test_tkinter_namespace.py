@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import ast
-from pathlib import Path
 import tkinter.ttk as ttk
+from pathlib import Path
 
 
 def _assigned_self_attributes(path: Path) -> set[str]:
@@ -12,9 +12,7 @@ def _assigned_self_attributes(path: Path) -> set[str]:
         targets: list[ast.expr] = []
         if isinstance(node, ast.Assign):
             targets.extend(node.targets)
-        elif isinstance(node, ast.AnnAssign):
-            targets.append(node.target)
-        elif isinstance(node, ast.AugAssign):
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
             targets.append(node.target)
         for target in targets:
             if (
