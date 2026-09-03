@@ -63,3 +63,23 @@ def test_reproducibility_verifier_detects_mismatch(tmp_path: Path) -> None:
     (second / "app.zip").write_bytes(b"different")
     with pytest.raises(RuntimeError, match="not reproducible"):
         verify(first, second)
+
+
+def test_binary_legal_bundle_is_required(tmp_path: Path) -> None:
+    source = tmp_path / "Pi-Hole-Manager"
+    source.mkdir()
+    for name in build_release._REQUIRED_LEGAL_FILES:
+        (source / name).write_text("placeholder\n", encoding="utf-8")
+    (source / "THIRD_PARTY_NOTICES.md").write_text(
+        "sbarbett/pihole6api\nCopyright 2025 Shane Barbetta\n",
+        encoding="utf-8",
+    )
+    (source / "THIRD_PARTY_LICENSES.txt").write_text(
+        "Wormhole Observatory third-party license bundle\n",
+        encoding="utf-8",
+    )
+
+    build_release._validate_binary_legal_bundle(source)
+    (source / "NOTICE").unlink()
+    with pytest.raises(RuntimeError, match="NOTICE"):
+        build_release._validate_binary_legal_bundle(source)
