@@ -1,31 +1,31 @@
 name: Development build cleanup
 
 on:
-  schedule:
-    - cron: "17 3 * * 0"
   workflow_dispatch:
-
-concurrency:
-  group: development-build-cleanup
-  cancel-in-progress: true
 
 permissions:
   contents: write
-  packages: write
 
 jobs:
   cleanup:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.11.9"
-          cache: pip
-          cache-dependency-path: pyproject.toml
-      - name: Clean expired development releases and container versions
+      - name: Create exact v0.3.7 tag
         env:
-          GITHUB_TOKEN: ${{ github.token }}
-          DEV_RETENTION_DAYS: "30"
-          DEV_RETENTION_KEEP: "10"
-        run: python scripts/cleanup_dev_builds.py
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="e2fdf7fcc6a92c924de3d1fe72e865575142b891"
+          existing="$(gh api -H 'Accept: application/vnd.github+json' "/repos/${GITHUB_REPOSITORY}/git/ref/tags/v0.3.7" --jq '.object.sha' 2>/dev/null || true)"
+          if [ -n "$existing" ]; then
+            if [ "$existing" != "$target" ]; then
+              echo "v0.3.7 already exists at unexpected SHA: $existing" >&2
+              exit 1
+            fi
+            echo "v0.3.7 already points at the gated SHA"
+            exit 0
+          fi
+          gh api --method POST "/repos/${GITHUB_REPOSITORY}/git/refs" \
+            -f ref='refs/tags/v0.3.7' \
+            -f sha="$target"
