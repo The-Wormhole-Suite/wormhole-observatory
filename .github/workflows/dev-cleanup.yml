@@ -17,8 +17,8 @@ jobs:
         run: |
           set -euo pipefail
           target="e2fdf7fcc6a92c924de3d1fe72e865575142b891"
-          existing="$(gh api -H 'Accept: application/vnd.github+json' "/repos/${GITHUB_REPOSITORY}/git/ref/tags/v0.3.7" --jq '.object.sha' 2>/dev/null || true)"
-          if [ -n "$existing" ]; then
+          if gh api -H 'Accept: application/vnd.github+json' "/repos/${GITHUB_REPOSITORY}/git/ref/tags/v0.3.7" >tag.json 2>/dev/null; then
+            existing="$(jq -r '.object.sha' tag.json)"
             if [ "$existing" != "$target" ]; then
               echo "v0.3.7 already exists at unexpected SHA: $existing" >&2
               exit 1
