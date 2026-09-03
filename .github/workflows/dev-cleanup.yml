@@ -1,16 +1,10 @@
 name: Development build cleanup
 
 on:
-  schedule:
-    - cron: "17 3 * * 0"
   workflow_dispatch:
 
-concurrency:
-  group: development-build-cleanup
-  cancel-in-progress: true
-
 permissions:
-  contents: write
+  contents: read
   packages: write
 
 jobs:
@@ -18,14 +12,36 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
         with:
-          python-version: "3.11.9"
-          cache: pip
-          cache-dependency-path: pyproject.toml
-      - name: Clean expired development releases and container versions
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          DEV_RETENTION_DAYS: "30"
-          DEV_RETENTION_KEEP: "10"
-        run: python scripts/cleanup_dev_builds.py
+          ref: e2fdf7fcc6a92c924de3d1fe72e865575142b891
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and publish exact v0.3.7 multi-architecture image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/the-wormhole-suite/wormhole-observatory:0.3.7
+            ghcr.io/the-wormhole-suite/wormhole-observatory:0.3
+            ghcr.io/the-wormhole-suite/wormhole-observatory:latest
+            ghcr.io/the-wormhole-suite/wormhole-observatory:sha-e2fdf7fcc6a92c924de3d1fe72e865575142b891
+          labels: |
+            org.opencontainers.image.title=Wormhole Observatory
+            org.opencontainers.image.version=0.3.7
+            org.opencontainers.image.source=https://github.com/The-Wormhole-Suite/wormhole-observatory
+            org.opencontainers.image.revision=e2fdf7fcc6a92c924de3d1fe72e865575142b891
+            org.opencontainers.image.licenses=AGPL-3.0-only
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
