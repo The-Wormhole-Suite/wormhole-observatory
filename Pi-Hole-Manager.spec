@@ -6,6 +6,8 @@ from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_submodules
 
+from scripts.generate_binary_license_bundle import generate_bundle
+
 project_root = Path(SPECPATH)
 build_root = project_root / "build"
 build_root.mkdir(parents=True, exist_ok=True)
@@ -17,6 +19,11 @@ architecture = "arm64" if machine in {"arm64", "aarch64"} else "x64"
 platform_id = "windows" if os.name == "nt" else "linux"
 entrypoint = "Pi-Hole-Manager.exe" if os.name == "nt" else "Pi-Hole-Manager"
 manifest_path = build_root / "install_manifest.json"
+third_party_license_bundle = generate_bundle(
+    project_root / "requirements-build.lock",
+    build_root / "THIRD_PARTY_LICENSES.txt",
+)
+
 manifest_path.write_text(
     json.dumps(
         {
@@ -41,6 +48,12 @@ analysis = Analysis(
     binaries=[],
     datas=[
         (str(manifest_path), "."),
+        (str(project_root / "LICENSE"), "."),
+        (str(project_root / "NOTICE"), "."),
+        (str(project_root / "TRADEMARKS.md"), "."),
+        (str(project_root / "UPSTREAMS.md"), "."),
+        (str(project_root / "THIRD_PARTY_NOTICES.md"), "."),
+        (str(third_party_license_bundle), "."),
         (str(project_root / "pihole_manager" / "data"), "pihole_manager/data"),
     ],
     hiddenimports=collect_submodules("keyring.backends"),
