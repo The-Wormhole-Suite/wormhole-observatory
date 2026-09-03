@@ -85,6 +85,43 @@ jobs:
       - name: Verify byte-for-byte reproducibility
         run: python scripts/verify_reproducible_release.py release-pass1 release-pass2
 
+      - name: Smoke-test packaged Linux GUI startup
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          if ! command -v xvfb-run >/dev/null 2>&1; then
+            echo "xvfb-run is required for the packaged GUI startup smoke test" >&2
+            exit 1
+          fi
+          rm -rf release-smoke
+          python - <<'PY'
+          from pathlib import Path
+          import zipfile
+
+          archives = sorted(Path("release-pass1").glob("Pi-Hole-Manager-linux-*.zip"))
+          if len(archives) != 1:
+              raise SystemExit(f"expected one Linux release archive, found {len(archives)}")
+          with zipfile.ZipFile(archives[0]) as archive:
+              archive.extractall("release-smoke")
+          PY
+          binary="$(find release-smoke -type f -name 'Pi-Hole-Manager' -print -quit)"
+          if [ -z "$binary" ]; then
+            echo "Packaged Linux GUI executable was not found" >&2
+            exit 1
+          fi
+          chmod +x "$binary"
+          log_file="$(mktemp)"
+          set +e
+          timeout --signal=TERM 8s xvfb-run -a "$binary" >"$log_file" 2>&1
+          status=$?
+          set -e
+          if [ "$status" -eq 124 ]; then
+            exit 0
+          fi
+          cat "$log_file"
+          echo "Packaged GUI exited before the startup smoke window completed (status=$status)" >&2
+          exit 1
+
       - name: Generate portable release provenance
         env:
           RELEASE_WORKFLOW_REF: ${{ github.workflow_ref }}
