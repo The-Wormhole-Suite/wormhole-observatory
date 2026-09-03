@@ -2,7 +2,7 @@
 
 ## Product model
 
-Pi-hole Manager separates four layers:
+Wormhole Observatory separates four layers:
 
 1. **Observation** — when, how often, and from which clients a domain was queried.
 2. **Evidence** — structured source findings, tags, service attribution, and history.
@@ -30,6 +30,61 @@ policy evaluation, review tasks, and protected list entries.
 Tkinter remains a presentation layer. Network operations run outside the UI thread. Domain
 Browser filters and pagination execute in SQLite. Column visibility and widths are persisted per
 view.
+
+## Shared core and frontend boundary
+
+Wormhole Observatory is one Python application core with two first-class presentation paths:
+
+```text
+                         ┌─ Tkinter desktop frontend ── in-process adapter ─┐
+User / operator ─────────┤                                                  ├─ application services
+                         └─ Web frontend / PWA ── authenticated HTTP API ──┘
+                                                                            │
+                                                                            ├─ persistence
+                                                                            ├─ Pi-hole adapters
+                                                                            ├─ evidence / LLM adapters
+                                                                            ├─ background jobs
+                                                                            └─ audit / backup / restore
+```
+
+The boundary is architectural, not merely organizational:
+
+- `pihole_manager` owns canonical application behavior, domain validation, transaction boundaries,
+  policy resolution, mutation orchestration, persistence, auditing, jobs, backup/restore semantics,
+  and integrations.
+- `pihole_manager.gui` is a local Tkinter presentation layer. It may call shared application
+  services directly in-process and must not become a second implementation of application rules.
+- The HTTP server is an adapter over the same application services. It owns transport concerns such
+  as authentication, authorization, request parsing, response schemas, pagination, HTTP error
+  mapping, and concurrency/idempotency contracts; it does not own independent business rules.
+- The Web/PWA client is a browser presentation layer over that HTTP API. JavaScript may implement
+  view state, interaction state, client-side formatting, and optimistic UX, but canonical
+  validation and mutations remain server-side.
+- The headless runtime must not depend on Tkinter initialization or a display server. Docker is the
+  preferred generic server distribution, and the Home Assistant App reuses that container runtime.
+- The desktop frontend is not routed through localhost HTTP solely to manufacture code sharing.
+  Shared Python services are the reuse boundary; HTTP exists because remote/browser clients need a
+  transport boundary.
+
+### Frontend parity policy
+
+The existing Web/PWA is review-focused and therefore does not yet have administrative parity with
+Tkinter. Expansion to full Web administration follows `docs/ROADMAP.md` Priority 9 and issue #50.
+During that work a capability matrix must track support across shared core, Tkinter, HTTP API, and
+Web UI.
+
+A shared feature is complete only when:
+
+1. its canonical behavior is implemented in the application/service layer;
+2. every intended frontend reaches that same behavior through an adapter rather than duplicating it;
+3. state-changing paths preserve the same validation, audit, simulation, policy, and transaction
+   behavior regardless of frontend;
+4. intentional platform-specific gaps are documented and tested; and
+5. the headless/server path remains usable without importing or initializing Tkinter.
+
+Remote Tkinter-to-server operation may be considered later, after the administration API reaches
+sufficient parity. It is not a prerequisite for server mode and does not replace the browser UI.
+VNC/noVNC-style streaming of the desktop GUI is not the primary Web architecture.
 
 ## Queue model
 
