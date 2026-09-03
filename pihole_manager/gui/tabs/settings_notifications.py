@@ -19,7 +19,7 @@ class NotificationsSettingsPage(ttk.Frame):
     def __init__(self, master: tk.Misc) -> None:
         super().__init__(master, padding=12)
         self.columnconfigure(1, weight=1)
-        self._options: Options | None = None
+        self._app_options: Options | None = None
 
         self.enable_desktop = tk.BooleanVar()
         self.enable_sound = tk.BooleanVar()
@@ -158,7 +158,7 @@ class NotificationsSettingsPage(ttk.Frame):
         )
 
     def load(self, options: Options) -> None:
-        self._options = options
+        self._app_options = options
         self.enable_desktop.set(options.notify.enable_desktop)
         self.enable_sound.set(options.notify.enable_sound)
         self.rate_limit.set(str(options.notify.rate_limit_sec))
@@ -249,7 +249,7 @@ class NotificationsSettingsPage(ttk.Frame):
         self.vapid_public.set(public_key or "Generated after UnifiedPush is saved.")
 
     def _send_test(self) -> None:
-        if self._options is None or not self.store(self._options):
+        if self._app_options is None or not self.store(self._app_options):
             return
         push = load_push_options()
         if not (push.ntfy_enabled or push.unifiedpush_enabled):
