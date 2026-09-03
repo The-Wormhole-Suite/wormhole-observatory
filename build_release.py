@@ -11,8 +11,49 @@ from pathlib import Path
 
 from pihole_manager.config import Options
 from pihole_manager.evidence_licensing import distribution_license_issues
+from scripts.generate_binary_license_bundle import generate_bundle
 
 _ZIP_MIN_EPOCH = 315532800  # 1980-01-01 UTC
+
+_PROJECT_LEGAL_FILES = (
+    "LICENSE",
+    "NOTICE",
+    "TRADEMARKS.md",
+    "UPSTREAMS.md",
+    "THIRD_PARTY_NOTICES.md",
+)
+_REQUIRED_LEGAL_FILES = (*_PROJECT_LEGAL_FILES, "THIRD_PARTY_LICENSES.txt")
+
+
+def _stage_binary_legal_bundle(project_root: Path, source: Path) -> None:
+    for name in _PROJECT_LEGAL_FILES:
+        origin = project_root / name
+        if not origin.is_file():
+            raise RuntimeError(f"Project legal file is missing: {name}")
+        (source / name).write_bytes(origin.read_bytes())
+    generate_bundle(
+        project_root / "requirements-build.lock",
+        source / "THIRD_PARTY_LICENSES.txt",
+    )
+
+
+def _validate_binary_legal_bundle(source: Path) -> None:
+    missing = [name for name in _REQUIRED_LEGAL_FILES if not (source / name).is_file()]
+    if missing:
+        raise RuntimeError(
+            "Release Onedir is missing mandatory legal files: " + ", ".join(missing)
+        )
+    upstream_notice = (source / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
+    if (
+        "Copyright 2025 Shane Barbetta" not in upstream_notice
+        or "sbarbett/pihole6api" not in upstream_notice
+    ):
+        raise RuntimeError(
+            "Embedded pihole6api MIT attribution is missing from THIRD_PARTY_NOTICES.md"
+        )
+    dependency_bundle = (source / "THIRD_PARTY_LICENSES.txt").read_text(encoding="utf-8")
+    if "Wormhole Observatory third-party license bundle" not in dependency_bundle:
+        raise RuntimeError("Generated Python third-party license bundle is invalid")
 
 
 def _architecture() -> str:
@@ -125,6 +166,8 @@ def main() -> int:
     source = project_root / "dist" / "Pi-Hole-Manager"
     if not source.is_dir():
         raise FileNotFoundError(f"Onedir build not found: {source}")
+    _stage_binary_legal_bundle(project_root, source)
+    _validate_binary_legal_bundle(source)
     output_dir = project_root / args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
     archive = output_dir / f"Pi-Hole-Manager-{args.platform}-{_architecture()}.zip"

@@ -1,0 +1,17 @@
+Wormhole Observatory
+Copyright (C) 2026 HyperCriSiS and contributors
+
+Source code license: GNU Affero General Public License v3.0 only
+SPDX-License-Identifier: AGPL-3.0-only
+
+The name “Wormhole Observatory”, the Wormhole Observatory logo and other
+project branding are not licensed under the AGPL. See TRADEMARKS.md.
+
+This distribution includes or derives from third-party software under separate
+licenses. See UPSTREAMS.md and THIRD_PARTY_NOTICES.md. Binary distributions also
+include THIRD_PARTY_LICENSES.txt with license material collected from the pinned
+Python build/runtime environment.
+
+Source code: https://github.com/The-Wormhole-Suite/wormhole-observatory
+
+This program is distributed without any warranty. See LICENSE for details.

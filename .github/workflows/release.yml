@@ -13,6 +13,13 @@ on:
       - "build_windows.ps1"
       - "requirements-build.lock"
       - "pyproject.toml"
+      - "LICENSE"
+      - "NOTICE"
+      - "TRADEMARKS.md"
+      - "UPSTREAMS.md"
+      - "THIRD_PARTY_NOTICES.md"
+      - "docs/releases/**"
+      - "scripts/generate_binary_license_bundle.py"
       - "pihole_manager/release_provenance.py"
       - "scripts/generate_release_provenance.py"
       - "scripts/verify_reproducible_release.py"
@@ -124,6 +131,7 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v6
       - uses: actions/download-artifact@v7
         with:
           path: release
@@ -137,9 +145,14 @@ jobs:
           case "$GITHUB_REF_NAME" in
             *-*) prerelease="--prerelease" ;;
           esac
+          notes_file="docs/releases/${GITHUB_REF_NAME}.md"
+          if [ ! -f "$notes_file" ]; then
+            echo "Curated release notes missing: $notes_file" >&2
+            exit 1
+          fi
           gh release create "$GITHUB_REF_NAME" release/* \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
             $prerelease \
-            --generate-notes \
-            --title "Pi-hole Manager ${GITHUB_REF_NAME}"
+            --notes-file "$notes_file" \
+            --title "Wormhole Observatory ${GITHUB_REF_NAME}"
