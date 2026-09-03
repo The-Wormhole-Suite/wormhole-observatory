@@ -1,31 +1,49 @@
 name: Development build cleanup
 
 on:
-  schedule:
-    - cron: "17 3 * * 0"
   workflow_dispatch:
 
-concurrency:
-  group: development-build-cleanup
-  cancel-in-progress: true
-
 permissions:
-  contents: write
+  contents: read
   packages: write
 
 jobs:
-  cleanup:
+  publish-release-container:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
         with:
-          python-version: "3.11.9"
-          cache: pip
-          cache-dependency-path: pyproject.toml
-      - name: Clean expired development releases and container versions
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          DEV_RETENTION_DAYS: "30"
-          DEV_RETENTION_KEEP: "10"
-        run: python scripts/cleanup_dev_builds.py
+          ref: e140f687566f5c83869df7bb194d3db4b9982fdc
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302
+        with:
+          images: ghcr.io/the-wormhole-suite/wormhole-observatory
+          tags: |
+            type=raw,value=0.3.6
+            type=raw,value=0.3
+            type=raw,value=latest
+            type=raw,value=sha-e140f687566f5c83869df7bb194d3db4b9982fdc
+      - name: Build and publish exact multi-architecture image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
