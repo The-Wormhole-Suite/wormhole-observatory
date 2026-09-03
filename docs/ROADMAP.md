@@ -79,9 +79,14 @@
 
 ## Priority 8: Public release hardening
 - [x] remediate known vulnerabilities in the current direct dependency baseline
-- [ ] add an explicit repository license after the project license is selected
+- [x] license project source under AGPL-3.0-only, matching Sprachverstand
 - [x] add a security policy with private vulnerability reporting guidance
 - [x] enforce dependency review for pull requests that change dependencies
 - [x] add CodeQL scanning for Python and GitHub Actions workflows
 - [x] audit public README, contribution guidance, and release documentation
 - [x] run the complete release-candidate gate before creating the first public v0.3.6 tag
+- [x] preserve embedded `sbarbett/pihole6api` MIT attribution and add upstream/trademark notices
+- [x] require project and third-party legal material in reproducible desktop release artifacts
+- [x] replace legacy release branding/generated first-release notes with curated Wormhole Observatory v0.3.6 notes
+- [ ] rerun the complete exact-tree release gate on the final licensing/release-preparation commit and record evidence in #46
+- [ ] create and verify the first public `v0.3.6` tag only after Push Protection is confirmed enabled

@@ -207,6 +207,16 @@ Update checks use the public GitHub Releases API and do not require a GitHub tok
 
 Container installations do not use the desktop self-updater. Docker or the chosen container manager pulls a new image and recreates the container while persistent data remains in mounted volumes. The Home Assistant App uses the same container image and Home Assistant's own update flow.
 
+## License, source, and project identity
+
+Wormhole Observatory source code is licensed under the **GNU Affero General Public License v3.0 only** (`AGPL-3.0-only`). See [LICENSE](LICENSE) and [NOTICE](NOTICE). The project name, logo, and other official branding are not licensed under the AGPL; see [TRADEMARKS.md](TRADEMARKS.md).
+
+The embedded `pihole6api/` package is derived from the MIT-licensed `sbarbett/pihole6api` project. Its original copyright and MIT notice are preserved in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md); provenance is documented in [UPSTREAMS.md](UPSTREAMS.md). Packaged desktop releases also contain a generated `THIRD_PARTY_LICENSES.txt` for the pinned Python build/runtime environment.
+
+Wormhole Observatory is not an official Pi-hole project and is not affiliated with or endorsed by the Pi-hole project. The Pi-hole name is used only to describe interoperability and compatibility.
+
+Source code: https://github.com/The-Wormhole-Suite/wormhole-observatory
+
 ## Evidence source tests
 
 The Evidence Sources settings page can test the selected source or all configured sources.
