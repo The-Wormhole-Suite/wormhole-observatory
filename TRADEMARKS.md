@@ -1,8 +1,8 @@
 # Wormhole Observatory – Name and logo policy
 
 The Wormhole Observatory source code is licensed under the GNU Affero General
-Public License Version 3, Version 3 only (`AGPL-3.0-only`). That software
-license does not grant rights to the project name, logos, or other branding.
+Public License Version 3 only (`AGPL-3.0-only`). That software license does not
+grant rights to the project name, logos, or other branding.
 
 ## Permitted use
 
