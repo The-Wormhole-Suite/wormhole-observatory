@@ -85,10 +85,11 @@ def generate_bundle(lock_path: Path, output_path: Path) -> Path:
         files = _license_files(distribution)
         if not files and not license_expression and not license_field:
             raise RuntimeError(
-                f"No license metadata or license file found for pinned distribution: {name}=={version}"
+                "No license metadata or license file found for pinned distribution: "
+                f"{name}=={version}"
             )
 
-        sections.extend([f"================================================================================", f"{name} {version}"])
+        sections.extend(["=" * 80, f"{name} {version}"])
         if license_expression:
             sections.append(f"License-Expression: {license_expression}")
         if license_field:
@@ -109,7 +110,9 @@ def generate_bundle(lock_path: Path, output_path: Path) -> Path:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Generate deterministic third-party license bundle")
+    parser = argparse.ArgumentParser(
+        description="Generate deterministic third-party license bundle"
+    )
     parser.add_argument("--lock", default="requirements-build.lock")
     parser.add_argument("--output", default="build/THIRD_PARTY_LICENSES.txt")
     args = parser.parse_args()

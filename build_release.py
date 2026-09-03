@@ -31,12 +31,16 @@ def _validate_binary_legal_bundle(source: Path) -> None:
             "Release Onedir is missing mandatory legal files: " + ", ".join(missing)
         )
     upstream_notice = (source / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
-    if "Copyright 2025 Shane Barbetta" not in upstream_notice or "sbarbett/pihole6api" not in upstream_notice:
-        raise RuntimeError("Embedded pihole6api MIT attribution is missing from THIRD_PARTY_NOTICES.md")
+    if (
+        "Copyright 2025 Shane Barbetta" not in upstream_notice
+        or "sbarbett/pihole6api" not in upstream_notice
+    ):
+        raise RuntimeError(
+            "Embedded pihole6api MIT attribution is missing from THIRD_PARTY_NOTICES.md"
+        )
     dependency_bundle = (source / "THIRD_PARTY_LICENSES.txt").read_text(encoding="utf-8")
     if "Wormhole Observatory third-party license bundle" not in dependency_bundle:
         raise RuntimeError("Generated Python third-party license bundle is invalid")
-
 
 
 def _architecture() -> str:
