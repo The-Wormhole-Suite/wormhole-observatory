@@ -11,17 +11,30 @@ from pathlib import Path
 
 from pihole_manager.config import Options
 from pihole_manager.evidence_licensing import distribution_license_issues
+from scripts.generate_binary_license_bundle import generate_bundle
 
 _ZIP_MIN_EPOCH = 315532800  # 1980-01-01 UTC
 
-_REQUIRED_LEGAL_FILES = (
+_PROJECT_LEGAL_FILES = (
     "LICENSE",
     "NOTICE",
     "TRADEMARKS.md",
     "UPSTREAMS.md",
     "THIRD_PARTY_NOTICES.md",
-    "THIRD_PARTY_LICENSES.txt",
 )
+_REQUIRED_LEGAL_FILES = (*_PROJECT_LEGAL_FILES, "THIRD_PARTY_LICENSES.txt")
+
+
+def _stage_binary_legal_bundle(project_root: Path, source: Path) -> None:
+    for name in _PROJECT_LEGAL_FILES:
+        origin = project_root / name
+        if not origin.is_file():
+            raise RuntimeError(f"Project legal file is missing: {name}")
+        (source / name).write_bytes(origin.read_bytes())
+    generate_bundle(
+        project_root / "requirements-build.lock",
+        source / "THIRD_PARTY_LICENSES.txt",
+    )
 
 
 def _validate_binary_legal_bundle(source: Path) -> None:
@@ -153,6 +166,7 @@ def main() -> int:
     source = project_root / "dist" / "Pi-Hole-Manager"
     if not source.is_dir():
         raise FileNotFoundError(f"Onedir build not found: {source}")
+    _stage_binary_legal_bundle(project_root, source)
     _validate_binary_legal_bundle(source)
     output_dir = project_root / args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
