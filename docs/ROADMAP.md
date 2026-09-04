@@ -90,3 +90,111 @@
 - [x] replace legacy release branding/generated first-release notes with curated Wormhole Observatory v0.3.6 notes
 - [ ] rerun the complete exact-tree release gate on the final licensing/release-preparation commit and record evidence in #46
 - [ ] create and verify the first public `v0.3.6` tag only after Push Protection is confirmed enabled
+
+## Priority 9: Shared-core dual frontend and full server administration
+
+### Architectural invariant
+
+Wormhole Observatory is **one application with one Python application core and two first-class
+frontends**, not separate desktop and server products:
+
+```text
+                         ┌─ Tkinter desktop frontend ── in-process adapter ─┐
+User / operator ─────────┤                                                  ├─ shared Python application services
+                         └─ Web frontend / PWA ── authenticated HTTP API ──┘
+                                                                            │
+                                                                            ├─ SQLite / migrations
+                                                                            ├─ Pi-hole v6 API
+                                                                            ├─ evidence / LLM providers
+                                                                            ├─ jobs / automation
+                                                                            └─ audit / backup / restore
+```
+
+The application/service layer owns all business rules, validation, persistence, policy decisions,
+Pi-hole mutations, evidence collection, job control, auditing and backup semantics. Tkinter remains
+a local presentation layer that may call those services directly in-process. The Web frontend is a
+separate browser presentation layer that reaches the same capabilities through a versioned HTTP
+adapter. The desktop application must not be forced through HTTP merely for code reuse, and the Web
+frontend must not reimplement application rules in JavaScript.
+
+Docker is the preferred generic server distribution. Home Assistant reuses the same container
+runtime. Bare-metal headless Python may remain supported where useful, but is not the primary server
+installation path.
+
+Tracking issue: #50.
+
+### 9A. Shared application-service boundary
+
+- [ ] inventory every user-visible desktop capability and classify it as shared-core, presentation-only, or platform-specific
+- [ ] define explicit application-service/query interfaces for state-changing operations and read models instead of allowing frontends to reach directly into persistence or Pi-hole adapters
+- [ ] move any remaining business decisions, validation, mutation orchestration, auditing, and rollback behavior out of Tkinter callbacks into shared application services
+- [ ] keep configuration schemas and validation in the shared core so Tk and Web edit the same canonical settings model
+- [ ] keep long-running jobs asynchronous/cancellable in the shared core; frontends only start, observe, cancel, retry, or prioritize them
+- [ ] enforce import boundaries so core/service modules never depend on `pihole_manager.gui`, Tkinter, browser assets, or HTTP presentation code
+- [ ] ensure the headless/container entry point can start and execute its full supported feature set without importing or initializing Tkinter
+
+### 9B. Versioned administration API
+
+- [ ] formalize a versioned HTTP API surface instead of extending review endpoints ad hoc
+- [ ] expose Pi-hole instance management, connection health, groups, exact rules, regex rules, subscribed lists, conflicts, audits, and rollback through shared services
+- [ ] expose Domain Database, evidence/history, protected services, dependency graphs, manual tags, rechecks, and review operations
+- [ ] expose LLM providers, pools, quota state, evidence-source configuration, tests, and operational health without returning stored secrets
+- [ ] expose job queues, scheduled work, cancellation/retry controls, simulation state, and background-worker status
+- [ ] expose backup/export/restore and migration status through safe server-side operations rather than browser filesystem assumptions
+- [ ] define consistent pagination, filtering, sorting, error envelopes, optimistic-concurrency/conflict behavior, and idempotency semantics for mutations
+- [ ] generate or maintain machine-checkable API contracts and reject accidental backwards-incompatible changes without an explicit API-version decision
+
+### 9C. Full responsive Web administration
+
+- [ ] evolve the existing review PWA into a complete responsive administration shell while preserving its installable PWA behavior
+- [ ] implement a Web dashboard for instance health, worker state, queue depth, recent actions, evidence-source status, provider quota/health, and update state
+- [ ] implement Web administration for Pi-hole instances, domain rules/lists/groups, Domain Database, review queue, evidence/history, audit/rollback, and protected-service configuration
+- [ ] implement Web administration for application settings, LLM providers/pools, evidence sources, notifications, automation, backups, and server operations
+- [ ] preserve responsive phone/tablet/desktop layouts so the server UI is practical from mobile browsers as well as desktop browsers
+- [ ] provide clear capability/error states when a function is unavailable because of deployment mode or host platform instead of silently hiding divergent behavior
+- [ ] keep browser code presentation-oriented: no duplicated policy resolution, validation rules, Pi-hole mutation logic, or persistence behavior in JavaScript
+
+### 9D. Desktop/Web parity contract
+
+- [ ] maintain a capability matrix mapping each core feature to Tkinter, HTTP API, and Web UI support
+- [ ] require every new shared feature to declare its frontend exposure before the roadmap item can be considered complete
+- [ ] add service-level contract tests that both Tk-facing adapters and HTTP handlers exercise against the same fixtures and expected state transitions
+- [ ] add mutation-parity tests for allow/deny, group/list/rule changes, settings writes, review decisions, job controls, rollback, and backup/restore flows
+- [ ] add read-model parity tests for filtering, pagination, status, history, and conflict views
+- [ ] permit deliberate desktop-only or Web-only capabilities only when the platform dependency is documented and the divergence is tested
+- [ ] prevent frontend code from bypassing audit, policy, simulation, validation, or transaction boundaries
+
+### 9E. Server authentication and network security
+
+- [ ] evolve bearer-token bootstrap into a documented server-grade authentication/session model appropriate for browser administration
+- [ ] add CSRF protection wherever cookie/session authentication or browser credentials make it applicable
+- [ ] define secure token/session rotation, expiry, revocation, logout, and recovery behavior without storing recoverable secrets in browser storage unnecessarily
+- [ ] keep safe defaults bound to local/private interfaces and require explicit configuration for broader network exposure
+- [ ] document Tailscale-first remote access plus reverse-proxy/TLS deployments without requiring a public cloud
+- [ ] define trusted-proxy/origin/host handling and rate limits for authentication-sensitive endpoints
+- [ ] test that API responses, logs, diagnostics, exports, and browser-visible errors never expose stored credentials or secret configuration values
+
+### 9F. Docker and server lifecycle
+
+- [ ] keep one production container image for generic Docker and Home Assistant rather than maintaining separate server implementations
+- [ ] provide a canonical Docker Compose example with explicit persistent volumes, health check, port binding, environment/config boundaries, and upgrade procedure
+- [ ] add end-to-end persistent-volume tests for first boot, restart, upgrade, schema migration, backup, restore, and rollback
+- [ ] define container update behavior independently from the desktop self-updater; image replacement must preserve application data and migration safety
+- [ ] verify clean shutdown and restart semantics for workers, queues, SQLite transactions, and in-flight jobs
+- [ ] verify `linux/amd64` and `linux/arm64` server behavior for every release that changes shared core or container/runtime code
+- [ ] keep server runtime functional without desktop display libraries beyond unavoidable packaging dependencies
+
+### 9G. Quality and release gates
+
+- [ ] add API integration tests that boot the real headless runtime and execute representative administration workflows end to end
+- [ ] add browser/PWA smoke tests for authentication, navigation, representative reads, representative mutations, and mobile-responsive rendering
+- [ ] keep the existing Tkinter source and packaged-binary startup smoke gates alongside server tests; neither frontend may regress because the other advances
+- [ ] require shared-core changes to pass desktop, API, and container test suites before release
+- [ ] include the frontend capability matrix and known intentional parity gaps in release review until full parity is reached
+- [ ] treat business logic duplicated in frontend code as an architectural regression to be removed before the corresponding feature is marked complete
+
+### 9H. Optional later modes
+
+- [ ] only after full administration API parity, evaluate an optional remote Tkinter client that connects to a remote Observatory core instead of opening the server database directly
+- [ ] keep remote Tkinter optional; the supported server administration path remains the browser UI
+- [ ] do not use VNC/noVNC or streamed Tkinter as the primary Web architecture
