@@ -6,7 +6,7 @@ from tkinter import messagebox, simpledialog, ttk
 from pihole_manager.gui.feedback import show_toast
 from pihole_manager.gui.tabs.llm_review import LLMReviewTab
 from pihole_manager.models import Policy
-from pihole_manager.review_decisions import apply_review_decision
+from pihole_manager.review_decisions import ReviewDecisionCommand, execute_review_decision
 
 
 class ReviewDecisionTab(LLMReviewTab):
@@ -22,6 +22,21 @@ class ReviewDecisionTab(LLMReviewTab):
             side="left", padx=(6, 0)
         )
 
+    def _build_command(
+        self,
+        domain: str,
+        decision: str,
+        *,
+        postpone_until: int | None = None,
+        comment: str = "",
+    ) -> ReviewDecisionCommand:
+        return ReviewDecisionCommand(
+            domain=domain,
+            decision=decision,
+            postpone_until=postpone_until,
+            comment=comment,
+        )
+
     def _apply_planned_domains(self, domains: list[str]) -> tuple[int, list[str]]:
         applied = 0
         errors: list[str] = []
@@ -32,7 +47,9 @@ class ReviewDecisionTab(LLMReviewTab):
                 continue
             try:
                 comment = str(self._rows.get(domain, {}).get("short") or "")
-                apply_review_decision(domain, action, comment=comment)
+                execute_review_decision(
+                    self._build_command(domain, action, comment=comment)
+                )
                 applied += 1
             except Exception as exc:
                 errors.append(f"{domain}: {exc}")
@@ -43,7 +60,9 @@ class ReviewDecisionTab(LLMReviewTab):
         for domain in domains:
             try:
                 comment = str(self._rows.get(domain, {}).get("short") or "")
-                apply_review_decision(domain, policy.value, comment=comment)
+                execute_review_decision(
+                    self._build_command(domain, policy.value, comment=comment)
+                )
             except Exception as exc:
                 errors.append(f"{domain}: {exc}")
         return errors
@@ -94,10 +113,12 @@ class ReviewDecisionTab(LLMReviewTab):
         errors: list[str] = []
         for domain in selected:
             try:
-                apply_review_decision(
-                    domain,
-                    decision,
-                    postpone_until=postpone_until,
+                execute_review_decision(
+                    self._build_command(
+                        domain,
+                        decision,
+                        postpone_until=postpone_until,
+                    )
                 )
             except Exception as exc:
                 errors.append(f"{domain}: {exc}")
