@@ -57,6 +57,7 @@ class ReviewDecisionPorts:
     delete_exact_domain: Callable[[str, str], Any]
     mark_action_applied: Callable[[str, str], Any]
     staging_remove: Callable[[list[str]], Any]
+    resolve_review: Callable[..., Any]
     set_review_preference: Callable[..., dict[str, Any]]
     resolve_open_review_tasks: Callable[[str, str], None]
     clock: Callable[[], float]
@@ -134,7 +135,7 @@ class ReviewDecisionApplicationService:
 
         if decision == "ignore":
             self._ports.staging_remove([domain])
-            self._ports.resolve_open_review_tasks(domain, "ignored")
+            self._ports.resolve_review([domain], decision="ignored")
             preference = self._ports.set_review_preference(
                 domain,
                 last_decision="ignore",

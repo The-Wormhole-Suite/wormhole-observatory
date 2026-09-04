@@ -13,7 +13,7 @@ from pihole_manager.application.review_decisions import (
     VALID_REVIEW_DECISIONS,
 )
 from pihole_manager.database_core import _DB_LOCK, _connection, staging_remove
-from pihole_manager.database_review import mark_action_applied
+from pihole_manager.database_review import mark_action_applied, review_resolve
 from pihole_manager.pihole_service import add_exact_domain, delete_exact_domain, fetch_exact_domains
 from pihole_manager.review_preferences import set_review_preference
 
@@ -49,6 +49,7 @@ def _application_service() -> ReviewDecisionApplicationService:
             delete_exact_domain=delete_exact_domain,
             mark_action_applied=mark_action_applied,
             staging_remove=staging_remove,
+            resolve_review=review_resolve,
             set_review_preference=set_review_preference,
             resolve_open_review_tasks=_resolve_open_review_tasks,
             clock=time.time,
