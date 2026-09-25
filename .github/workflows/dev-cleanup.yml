@@ -28,4 +28,4 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           DEV_RETENTION_DAYS: "30"
           DEV_RETENTION_KEEP: "10"
-        run: python scripts/cleanup_dev_builds.py
+        run: python -m scripts.cleanup_dev_builds
